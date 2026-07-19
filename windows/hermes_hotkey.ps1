@@ -76,7 +76,8 @@ while ($true) {
         Send-HermesCommand "stop_listening"
     }
 
-    if ($global:stream.DataAvailable) {
+    # Drain all pending JSON lines from stream buffer immediately
+    while ($global:stream.DataAvailable) {
         $line = $reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
             try {
@@ -97,7 +98,7 @@ while ($true) {
                     Write-Host "[HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
                 }
             } catch {
-                Write-Host "  ... Raw TCP payload: $line" -ForegroundColor Gray
+                Write-Host "  ... TCP Payload: $line" -ForegroundColor Gray
             }
         }
     }

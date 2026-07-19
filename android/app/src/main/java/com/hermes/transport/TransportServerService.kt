@@ -192,13 +192,11 @@ class TransportServerService : Service() {
                 try {
                     writer.println(raw)
                     if (writer.checkError()) {
-                        Log.w(TAG, "Client socket disconnected. Removing writer.")
                         iterator.remove()
                     } else {
                         Log.d(TAG, "Broadcast JSON to client: $raw")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed writing to client socket: ${e.message}")
                     iterator.remove()
                 }
             }
