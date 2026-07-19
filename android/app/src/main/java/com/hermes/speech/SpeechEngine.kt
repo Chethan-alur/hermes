@@ -31,6 +31,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private var recognizer: SpeechRecognizer? = null
     private var listener: ((SpeechEvent) -> Unit)? = null
     private var sequenceCounter = 0
+    @Volatile private var isListeningActive = false
 
     companion object {
         private const val TAG = "AndroidSpeechEngine"
@@ -48,6 +49,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     override fun startListening(onEvent: (SpeechEvent) -> Unit) {
         this.listener = onEvent
         this.sequenceCounter = 0
+        this.isListeningActive = true
 
         listener?.invoke(SpeechEvent.ListeningStarted)
 
@@ -63,15 +65,23 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     }
 
     override fun stopListening() {
-        recognizer?.stopListening()
-        listener?.invoke(SpeechEvent.ListeningStopped)
-        Log.i(TAG, "SpeechRecognizer stopped.")
+        if (isListeningActive) {
+            isListeningActive = false
+            try {
+                recognizer?.stopListening()
+            } catch (e: Exception) {
+                Log.w(TAG, "stopListening ignored exception: ${e.message}")
+            }
+            listener?.invoke(SpeechEvent.ListeningStopped)
+            Log.i(TAG, "SpeechRecognizer stopped.")
+        }
     }
 
     override fun destroy() {
         recognizer?.destroy()
         recognizer = null
         listener = null
+        isListeningActive = false
     }
 
     private fun setupRecognitionListener() {
@@ -96,6 +106,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             }
 
             override fun onError(error: Int) {
+                if (!isListeningActive && error == SpeechRecognizer.ERROR_CLIENT) {
+                    Log.d(TAG, "Ignoring redundant ERROR_CLIENT after recognition finished.")
+                    return
+                }
+                isListeningActive = false
                 val errorMsg = getErrorMessage(error)
                 Log.e(TAG, "Speech recognition error: $errorMsg (code $error)")
                 if (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
@@ -105,6 +120,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             }
 
             override fun onResults(results: Bundle?) {
+                isListeningActive = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val confidences = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
                 if (!matches.isNullOrEmpty()) {
