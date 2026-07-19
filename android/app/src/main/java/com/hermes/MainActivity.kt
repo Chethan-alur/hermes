@@ -32,7 +32,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate()
+        super.onCreate(savedInstanceState)
         setContentView(createFeasibilityLayout())
 
         statusTextView = findViewById(R.id.text_status)
@@ -198,7 +198,7 @@ class MainActivity : AppCompatActivity() {
 
         val console = TextView(this).apply {
             id = R.id.text_console
-            textColor = 0xFF00FF00.toInt() // Matrix green console text
+            setTextColor(0xFF00FF00.toInt()) // Matrix green console text
             textSize = 13f
             typeface = android.graphics.Typeface.MONOSPACE
         }
