@@ -3,6 +3,7 @@
 Windows Companion Daemon - Project Hermes
 Coordinates Global Hotkey, TCP Transport, and Text Injection into active window.
 Maintains persistent TCP socket connection to Android companion over port 9999.
+Supports F12 ANSI escape sequences (^[[24~) in Linux/WSL terminal mode.
 """
 
 import sys
@@ -27,17 +28,25 @@ logger = logging.getLogger("HermesWindowsMain")
 
 
 def read_key_nonblocking():
-    """Non-blocking single keypress reader for Linux/WSL terminal."""
+    """Non-blocking key & ANSI escape sequence (e.g. ^[[24~ for F12) reader for Linux/WSL terminal."""
     try:
         import tty
         import termios
         fd = sys.stdin.fileno()
-        rlist, _, _ = select.select([fd], [], [], 0.1)
+        rlist, _, _ = select.select([fd], [], [], 0.05)
         if rlist:
             old_settings = termios.tcgetattr(fd)
             try:
                 tty.setraw(fd)
                 ch = sys.stdin.read(1)
+                # Check for ANSI escape sequences (F12 emits ^[[24~)
+                if ch == "\x1b":
+                    r_seq, _, _ = select.select([fd], [], [], 0.05)
+                    if r_seq:
+                        seq = sys.stdin.read(4)
+                        full_seq = ch + seq
+                        if "[24~" in full_seq: # F12 ANSI code
+                            return "f12"
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             return ch
@@ -50,7 +59,7 @@ class HermesWindowsDaemon:
     def __init__(self, host: str = "127.0.0.1", port: int = 9999):
         self.injector = TextInjector()
         self.transport = TCPTransportClient(host=host, port=port, on_message_callback=self.on_protocol_message)
-        self.hotkey_manager = HotkeyManager(on_command_callback=self.send_command)
+        self.hotkey_manager = HotkeyManager(on_command_callback=self.send_command, hotkey_name="f12")
         self.running = False
         self.is_listening_toggle = False
 
@@ -84,7 +93,7 @@ class HermesWindowsDaemon:
             print("\n" + "=" * 60)
             print("🎙️ Project Hermes Terminal Controller (WSL / Linux Mode)")
             print("=" * 60)
-            print("Press [SPACEBAR] to START/STOP Push-To-Talk!")
+            print("Press [F12] or [SPACEBAR] to START/STOP Push-To-Talk!")
             print("Press [q] to quit.\n")
 
             try:
@@ -94,7 +103,7 @@ class HermesWindowsDaemon:
                         if ch.lower() in ["q", "\x03"]: # 'q' or Ctrl+C
                             self.stop()
                             break
-                        elif ch in [" ", "s", "r", "\r", "\n"]:
+                        elif ch in [" ", "s", "r", "\r", "\n", "f12"]:
                             self.toggle_push_to_talk()
                     time.sleep(0.05)
             except (KeyboardInterrupt, EOFError):
@@ -104,7 +113,7 @@ class HermesWindowsDaemon:
     def toggle_push_to_talk(self):
         if not self.is_listening_toggle:
             self.is_listening_toggle = True
-            print("\n🔴 [LISTENING...] Speak into your phone now! Press [SPACEBAR] when finished.")
+            print("\n🔴 [LISTENING...] Speak into your phone now! Press [F12]/[SPACEBAR] when finished.")
             self.send_command({
                 "version": "1.0",
                 "type": "command",
