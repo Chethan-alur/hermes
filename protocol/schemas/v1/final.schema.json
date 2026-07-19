@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes.local/protocol/v1/final.schema.json",
+  "title": "HermesFinalMessage",
+  "description": "Protocol contract schema for final recognition result sent from Android to Windows upon speech completion.",
+  "type": "object",
+  "required": ["version", "type", "text", "timestamp"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "type": {
+      "type": "string",
+      "const": "final"
+    },
+    "text": {
+      "type": "string",
+      "description": "Final formatted speech recognition text string."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Confidence score of the speech engine output."
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix timestamp in milliseconds when final result was generated."
+    }
+  },
+  "additionalProperties": false
+}

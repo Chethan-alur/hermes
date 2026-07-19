@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "type": "command",
+  "command": "start_listening",
+  "timestamp": 1773945356000,
+  "payload": {
+    "language": "en-US",
+    "engine": "android_speech_recognizer"
+  }
+}

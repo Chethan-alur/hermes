@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes.local/protocol/v1/partial.schema.json",
+  "title": "HermesPartialMessage",
+  "description": "Protocol contract schema for real-time partial speech recognition events sent from Android to Windows.",
+  "type": "object",
+  "required": ["version", "type", "text", "sequence", "timestamp"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "type": {
+      "type": "string",
+      "const": "partial"
+    },
+    "text": {
+      "type": "string",
+      "description": "Real-time partial transcript string."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing sequence number for the current listening session."
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix timestamp in milliseconds when recognition event occurred."
+    }
+  },
+  "additionalProperties": false
+}

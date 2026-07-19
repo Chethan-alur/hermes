@@ -1,0 +1,6 @@
+{
+  "version": "1.0",
+  "type": "command",
+  "command": "stop_listening",
+  "timestamp": 1773945360000
+}

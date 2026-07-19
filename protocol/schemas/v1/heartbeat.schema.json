@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes.local/protocol/v1/heartbeat.schema.json",
+  "title": "HermesHeartbeatMessage",
+  "description": "Protocol contract schema for periodic transport keep-alive heartbeats.",
+  "type": "object",
+  "required": ["version", "type", "status", "timestamp"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "type": {
+      "type": "string",
+      "const": "heartbeat"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ready", "busy", "error"]
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix timestamp in milliseconds when heartbeat was generated."
+    }
+  },
+  "additionalProperties": false
+}

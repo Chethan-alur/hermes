@@ -1,0 +1,7 @@
+{
+  "version": "1.0",
+  "type": "error",
+  "code": "SPEECH_TIMEOUT",
+  "message": "No speech detected within 5 seconds.",
+  "timestamp": 1773945365000
+}

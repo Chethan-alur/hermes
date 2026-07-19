@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes.local/protocol/v1/command.schema.json",
+  "title": "HermesCommandMessage",
+  "description": "Protocol contract schema for control commands sent from Windows companion to Android service.",
+  "type": "object",
+  "required": ["version", "type", "command", "timestamp"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "type": {
+      "type": "string",
+      "const": "command"
+    },
+    "command": {
+      "type": "string",
+      "enum": ["start_listening", "stop_listening", "cancel_listening", "ping"]
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix timestamp in milliseconds when the command was generated."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Optional parameters for specific commands (e.g. language profile, engine preference).",
+      "properties": {
+        "language": {
+          "type": "string",
+          "default": "en-US"
+        },
+        "engine": {
+          "type": "string",
+          "default": "android_speech_recognizer"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
