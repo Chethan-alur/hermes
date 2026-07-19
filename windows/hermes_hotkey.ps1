@@ -105,7 +105,8 @@ while ($true) {
     }
     $wasKeyPressed = $isKeyPressed
 
-    while ($global:stream.DataAvailable -or ($reader.Peek() -ge 0)) {
+    # Non-blocking network stream drain
+    while ($global:stream.DataAvailable) {
         $line = $reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
             try {
