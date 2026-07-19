@@ -1,5 +1,5 @@
 # Project Hermes - Native Windows PowerShell Global Hotkey Daemon
-# Listens globally for F12 (VK 123) and Dell Search Key (VK 170) using Win32 GetAsyncKeyState.
+# Listens globally for F12 (VK 123), Dell Search Key (VK 170), and Calculator Key (VK 183).
 # Sends protocol commands over TCP port 9999 to Android and injects text into active window.
 
 Add-Type -TypeDefinition @"
@@ -21,10 +21,10 @@ $VK_SEARCH = 170
 $VK_CALCULATOR = 183
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "🎙️ Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
+Write-Host "Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Press & Hold [F12] (or Dell Search Key) to Dictate." -ForegroundColor Yellow
-Write-Host "Release [F12] when finished speaking." -ForegroundColor Yellow
+Write-Host "Press & Hold [F12] (or Dell Search Key / Calculator Key) to Dictate." -ForegroundColor Yellow
+Write-Host "Release key when finished speaking." -ForegroundColor Yellow
 Write-Host "Press Ctrl+C to exit.`n" -ForegroundColor Gray
 
 $tcpClient = $null
@@ -34,10 +34,10 @@ function Connect-Transport {
     try {
         $global:tcpClient = New-Object System.Net.Sockets.TcpClient($HOST_IP, $PORT)
         $global:stream = $global:tcpClient.GetStream()
-        Write-Host "✅ Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
+        Write-Host "Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
         return $true
     } catch {
-        Write-Host "⚠️ Connecting to Android transport server at $HOST_IP`:$PORT failed. Retrying..." -ForegroundColor Red
+        Write-Host "Connecting to Android transport server at $HOST_IP`:$PORT failed. Retrying..." -ForegroundColor Red
         return $false
     }
 }
@@ -59,7 +59,6 @@ function Send-HermesCommand($cmdName) {
 
 # Main Event Loop
 while ($true) {
-    # Check if F12 (123) or Search Key (170) or Calculator Key (183) is pressed (MSB bit set)
     $stateF12 = [Win32Keyboard]::GetAsyncKeyState($VK_F12) -band 0x8000
     $stateSearch = [Win32Keyboard]::GetAsyncKeyState($VK_SEARCH) -band 0x8000
     $stateCalc = [Win32Keyboard]::GetAsyncKeyState($VK_CALCULATOR) -band 0x8000
@@ -68,32 +67,35 @@ while ($true) {
 
     if ($isKeyPressed -and -not $isListening) {
         $isListening = $true
-        Write-Host "`n🔴 [HOTKEY DOWN] F12 / Search Key Pressed! Speech Recognition STARTED." -ForegroundColor Red
+        Write-Host "`n[HOTKEY DOWN] F12 / Search Key Pressed! Speech Recognition STARTED." -ForegroundColor Red
         Send-HermesCommand "start_listening"
     } elseif (-not $isKeyPressed -and $isListening) {
         $isListening = $false
-        Write-Host "`n⏹️ [HOTKEY UP] F12 / Search Key Released! Speech Recognition STOPPED." -ForegroundColor Yellow
+        Write-Host "`n[HOTKEY UP] F12 / Search Key Released! Speech Recognition STOPPED." -ForegroundColor Yellow
         Send-HermesCommand "stop_listening"
     }
 
-    # Process incoming responses from Android server non-blocking
     if ($global:stream.DataAvailable) {
         $line = $reader.ReadLine()
         if ($line) {
-            if ($line -match '"type"\s*:\s*"partial"') {
-                if ($line -match '"text"\s*:\s*"([^"]+)"') {
-                    $text = $Matches[1]
-                    Write-Host "  ... Partial: `"$text`"" -ForegroundColor DarkGray
+            if ($line.Contains('"type":"partial"') -or $line.Contains('"type": "partial"')) {
+                Write-Host "  ... Partial result received: $line" -ForegroundColor DarkGray
+            } elseif ($line.Contains('"type":"final"') -or $line.Contains('"type": "final"')) {
+                Write-Host "`n[FINAL SPEECH RESULT]: $line`n" -ForegroundColor Green
+                # Parse text using IndexOf
+                $idx = $line.IndexOf('"text":')
+                if ($idx -ge 0) {
+                    $sub = $line.Substring($idx + 8)
+                    $endIdx = $sub.IndexOf('",')
+                    if ($endIdx -lt 0) { $endIdx = $sub.IndexOf('"}') }
+                    if ($endIdx -gt 0) {
+                        $cleanText = $sub.Substring(0, $endIdx)
+                        Write-Host "Injecting Text: $cleanText" -ForegroundColor Cyan
+                        [System.Windows.Forms.SendKeys]::SendWait($cleanText)
+                    }
                 }
-            } elseif ($line -match '"type"\s*:\s*"final"') {
-                if ($line -match '"text"\s*:\s*"([^"]+)"') {
-                    $text = $Matches[1]
-                    Write-Host "`n✨ [FINAL SPEECH RESULT]: `"$text`"`n" -ForegroundColor Green
-                    # Inject text into currently focused active Windows window
-                    [System.Windows.Forms.SendKeys]::SendWait($text)
-                }
-            } elseif ($line -match '"type"\s*:\s*"heartbeat"') {
-                Write-Host "💓 [HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
+            } elseif ($line.Contains('"type":"heartbeat"') -or $line.Contains('"type": "heartbeat"')) {
+                Write-Host "[HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
             }
         }
     }
