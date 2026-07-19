@@ -23,6 +23,7 @@ class TestHermesEndToEnd(unittest.TestCase):
 
     def setUp(self):
         """Creates a socket connection to Android TransportServer on port 9999."""
+        self.buffer = ""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(5.0)
@@ -41,13 +42,17 @@ class TestHermesEndToEnd(unittest.TestCase):
     def read_json_line(self, timeout: float = 5.0) -> dict:
         """Reads a single newline-delimited JSON message from socket."""
         self.sock.settimeout(timeout)
-        buffer = ""
-        while "\n" not in buffer:
-            chunk = self.sock.recv(1024).decode("utf-8")
+        if not hasattr(self, 'buffer'):
+            self.buffer = ""
+        while "\n" not in self.buffer:
+            chunk = self.sock.recv(4096).decode("utf-8")
             if not chunk:
                 break
-            buffer += chunk
-        line = buffer.split("\n", 1)[0].strip()
+            self.buffer += chunk
+        if "\n" not in self.buffer:
+            self.fail("Timed out waiting for newline in JSON stream.")
+        line, self.buffer = self.buffer.split("\n", 1)
+        line = line.strip()
         self.assertTrue(line, "Received empty line from Android server.")
         return json.loads(line)
 
@@ -136,6 +141,7 @@ class TestHermesEndToEnd(unittest.TestCase):
                 final_found = True
                 self.assertEqual(msg.get("text"), "Project Hermes automated speech synthesis end to end test")
                 print(f"  ✅ [E2E STEP 4b] Received Final Result Stream: '{msg.get('text')}' (Conf: {msg.get('confidence')})")
+                break
 
         self.assertTrue(partial_found, "Failed to receive partial speech stream.")
         self.assertTrue(final_found, "Failed to receive final speech result.")

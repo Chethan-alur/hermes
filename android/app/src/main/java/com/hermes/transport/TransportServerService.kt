@@ -144,18 +144,9 @@ class TransportServerService : Service() {
                         Log.i(TAG, "🧪 [E2E MOCK SPEECH]: Simulating speech stream for automated E2E self-testing...")
                         Thread {
                             try {
-                                Thread.sleep(200)
-                                handleSpeechEvent(SpeechEvent.ListeningStarted)
-                                Thread.sleep(150)
-                                handleSpeechEvent(SpeechEvent.ReadyForSpeech)
-                                Thread.sleep(150)
-                                handleSpeechEvent(SpeechEvent.BeginningOfSpeech)
-                                Thread.sleep(200)
-                                val mockText = json.optString("mock_text", "Project Hermes automated speech synthesis test")
+                                val mockText = json.optString("mock_text", "Project Hermes automated speech synthesis end to end test")
                                 handleSpeechEvent(SpeechEvent.PartialResult(mockText, 1))
-                                Thread.sleep(200)
-                                handleSpeechEvent(SpeechEvent.EndOfSpeech)
-                                Thread.sleep(150)
+                                Thread.sleep(50)
                                 handleSpeechEvent(SpeechEvent.FinalResult(mockText, 0.99f))
                             } catch (e: Exception) {
                                 Log.e(TAG, "Mock speech simulation error: ${e.message}")
