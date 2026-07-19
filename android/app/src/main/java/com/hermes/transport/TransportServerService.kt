@@ -121,7 +121,6 @@ class TransportServerService : Service() {
 
     private fun parseIncomingCommand(jsonStr: String) {
         try {
-            Log.d(TAG, "📥 [TCP RECV RAW]: $jsonStr")
             val json = JSONObject(jsonStr)
             val type = json.optString("type")
             val command = json.optString("command")
@@ -129,19 +128,19 @@ class TransportServerService : Service() {
             if (type == "command") {
                 when (command) {
                     "start_listening" -> {
-                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'start_listening' -> Dispatching to Main UI thread...")
+                        Log.i(TAG, "Command: start_listening")
                         mainHandler.post {
                             speechEngine?.startListening { event -> handleSpeechEvent(event) }
                         }
                     }
                     "stop_listening" -> {
-                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'stop_listening' -> Dispatching to Main UI thread...")
+                        Log.i(TAG, "Command: stop_listening")
                         mainHandler.post {
                             speechEngine?.stopListening()
                         }
                     }
                     "ping" -> {
-                        Log.d(TAG, "💓 [HEARTBEAT RECV]: Responding with ready heartbeat...")
+                        Log.d(TAG, "Ping received; sending heartbeat")
                         sendJson(JSONObject().apply {
                             put("version", "1.0")
                             put("type", "heartbeat")
@@ -150,7 +149,7 @@ class TransportServerService : Service() {
                         })
                     }
                     "simulate_speech" -> {
-                        Log.i(TAG, "🧪 [E2E MOCK SPEECH]: Simulating speech stream for automated E2E self-testing...")
+                        Log.i(TAG, "Simulating speech stream (E2E self-test)")
                         Thread {
                             try {
                                 val mockText = json.optString("mock_text", "Project Hermes automated speech synthesis end to end test")
@@ -163,7 +162,7 @@ class TransportServerService : Service() {
                         }.start()
                     }
                     else -> {
-                        Log.w(TAG, "⚠️ Unknown command received: $command")
+                        Log.w(TAG, "Unknown command: $command")
                     }
                 }
             }
