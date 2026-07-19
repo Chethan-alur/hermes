@@ -1,0 +1,67 @@
+import time
+import logging
+
+logger = logging.getLogger("HermesHotkey")
+
+try:
+    from pynput import keyboard
+except ImportError:
+    keyboard = None
+
+
+class HotkeyManager:
+    """
+    Global hotkey manager listening for Push-To-Talk (Right Ctrl hold).
+    Emits JSON command payloads on keydown and keyup events.
+    """
+    def __init__(self, on_command_callback, hotkey_name: str = "ctrl_r"):
+        self.on_command = on_command_callback
+        self.hotkey_name = hotkey_name
+        self.is_pressed = False
+        self.listener = None
+
+    def start(self):
+        if keyboard is None:
+            logger.warning("pynput not available; HotkeyManager running in manual/mock mode.")
+            return
+
+        logger.info(f"Starting global hotkey listener for key: {self.hotkey_name}")
+        self.listener = keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release
+        )
+        self.listener.start()
+
+    def stop(self):
+        if self.listener:
+            self.listener.stop()
+            self.listener = None
+
+    def _on_press(self, key):
+        if self._is_target_key(key) and not self.is_pressed:
+            self.is_pressed = True
+            logger.info("Push-To-Talk key DOWN -> Emitting start_listening")
+            self.on_command({
+                "version": "1.0",
+                "type": "command",
+                "command": "start_listening",
+                "timestamp": int(time.time() * 1000)
+            })
+
+    def _on_release(self, key):
+        if self._is_target_key(key) and self.is_pressed:
+            self.is_pressed = False
+            logger.info("Push-To-Talk key UP -> Emitting stop_listening")
+            self.on_command({
+                "version": "1.0",
+                "type": "command",
+                "command": "stop_listening",
+                "timestamp": int(time.time() * 1000)
+            })
+
+    def _is_target_key(self, key) -> bool:
+        if keyboard is None:
+            return False
+        if key == keyboard.Key.ctrl_r:
+            return True
+        return False

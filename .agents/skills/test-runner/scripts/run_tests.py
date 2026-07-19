@@ -28,12 +28,22 @@ def run_unit_tests(repo_root: Path) -> bool:
         print("ℹ️ No python unit test files in tests/ directory yet. Contract verification passed.")
         return True
     
-    try:
-        res = subprocess.run([sys.executable, "-m", "pytest", str(pytest_path)])
-        return res.returncode == 0
-    except Exception as e:
-        print(f"⚠️ Pytest execution skipped or failed: {e}")
+    # Try pytest first, fall back to built-in unittest module
+    res = subprocess.run([sys.executable, "-m", "pytest", str(pytest_path)], capture_output=True, text=True)
+    if res.returncode == 0:
+        print(res.stdout)
         return True
+    elif "No module named pytest" in res.stderr:
+        print("ℹ️ pytest module not found, falling back to python unittest runner...")
+        res_unit = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"], capture_output=True, text=True)
+        print(res_unit.stdout)
+        if res_unit.returncode != 0:
+            print(res_unit.stderr)
+        return res_unit.returncode == 0
+    else:
+        print(res.stdout)
+        print(res.stderr)
+        return False
 
 
 def main():
