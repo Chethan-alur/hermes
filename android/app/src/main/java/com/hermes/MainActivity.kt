@@ -47,7 +47,8 @@ class MainActivity : AppCompatActivity() {
 
         checkPermissions()
         speechEngine = AndroidSpeechEngine(this)
-        logEvent("System initialized. Hermes Milestone 0 Feasibility App Ready.")
+        startHermesService()
+        logEvent("System initialized. Hermes Foreground Transport Service Started on Port 9999.")
     }
 
     override fun onDestroy() {

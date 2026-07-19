@@ -36,7 +36,8 @@ tasks:
     cmds:
       - task: android:install
       - task: adb:forward
-      - echo "✅ Deployment complete! Run 'task windows:run' or 'task test:mode' to start."
+      - '{{.ADB}} shell am start -n com.hermes/.MainActivity'
+      - echo "✅ Deployment complete! App launched & listening on port 9999. Run 'task windows:run' to start."
 
   android:build:
     desc: Build the Android companion app APK
