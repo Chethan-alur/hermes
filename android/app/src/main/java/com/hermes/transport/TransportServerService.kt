@@ -191,7 +191,12 @@ class TransportServerService : Service() {
                 val writer = iterator.next()
                 try {
                     writer.println(raw)
-                    Log.d(TAG, "Broadcast JSON to client: $raw")
+                    if (writer.checkError()) {
+                        Log.w(TAG, "Client socket disconnected. Removing writer.")
+                        iterator.remove()
+                    } else {
+                        Log.d(TAG, "Broadcast JSON to client: $raw")
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed writing to client socket: ${e.message}")
                     iterator.remove()

@@ -37,7 +37,7 @@ def send(cmd_name: str, host: str = "127.0.0.1", port: int = 9999):
         # Wait for response streaming if start command
         if cmd_name == "start_listening":
             print("📡 Listening for response stream (press Ctrl+C to disconnect)...")
-            s.settimeout(10.0)
+            s.settimeout(120.0)
             buffer = ""
             while True:
                 try:
