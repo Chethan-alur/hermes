@@ -1,6 +1,6 @@
 # Project Hermes - Native Windows PowerShell Global Hotkey Daemon
 # Listens globally for F12 (VK 123), Dell Search Key (VK 170), and Calculator Key (VK 183).
-# Automatically focuses active target (or Notepad) and pastes speech transcript via Win32 keybd_event (Ctrl+V).
+# Toggle Mode with Key Edge Detection: Press key ONCE to START -> Speak -> Press key ONCE again to STOP & Paste.
 
 Add-Type -TypeDefinition @"
 using System;
@@ -15,6 +15,9 @@ public class Win32Input {
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
 
@@ -58,6 +61,7 @@ $wasKeyPressed = $false
 $reader = New-Object System.IO.StreamReader($global:stream)
 $writer = New-Object System.IO.StreamWriter($global:stream)
 $writer.AutoFlush = $true
+$wsh = New-Object -ComObject WScript.Shell
 
 function Send-HermesCommand($cmdName) {
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -77,20 +81,13 @@ function Set-WindowsTextClipboard($textToCopy) {
     }
 }
 
-function Focus-TargetAndPaste {
-    # If Notepad is running, focus it automatically
-    $np = Get-Process notepad -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($np -and $np.MainWindowHandle -ne [IntPtr]::Zero) {
-        [Win32Input]::SetForegroundWindow($np.MainWindowHandle)
-        Start-Sleep -Milliseconds 150
-    }
-
-    # Send Ctrl (0x11) + V (0x56)
-    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero)
+function Send-Win32Paste {
+    # Send Ctrl+V via Win32 keybd_event
+    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl DOWN
+    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
     Start-Sleep -Milliseconds 30
-    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero)
-    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V UP
+    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl UP
 }
 
 # Main Event Loop
@@ -105,7 +102,7 @@ while ($true) {
         if (-not $isListening) {
             $isListening = $true
             Write-Host ""
-            Write-Host "[SPEECH STARTED] Press [F12] again when finished speaking..." -ForegroundColor Red
+            Write-Host "[SPEECH STARTED] Speak into phone now... Press [F12] when done." -ForegroundColor Red
             Send-HermesCommand "start_listening"
         } else {
             $isListening = $false
@@ -116,7 +113,7 @@ while ($true) {
     }
     $wasKeyPressed = $isKeyPressed
 
-    # Non-blocking network stream drain
+    # Read all incoming stream lines
     while ($global:stream.DataAvailable) {
         $line = $reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
@@ -128,13 +125,15 @@ while ($true) {
                 } elseif ($msg.type -eq "final") {
                     $ftext = $msg.text
                     Write-Host ""
-                    Write-Host "[FINAL SPEECH RESULT]: $ftext" -ForegroundColor Green
+                    Write-Host "============================================================" -ForegroundColor Green
+                    Write-Host "[FINAL TRANSCRIPT]: $ftext" -ForegroundColor Green
+                    Write-Host "============================================================" -ForegroundColor Green
                     Write-Host ""
                     if ($ftext -and $ftext.Trim().Length -gt 0) {
-                        Write-Host "[AUTO-FOCUSING NOTEPAD & PASTING VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
+                        Write-Host "[COPYING TO CLIPBOARD & PASTING VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
                         Set-WindowsTextClipboard $ftext
                         Start-Sleep -Milliseconds 100
-                        Focus-TargetAndPaste
+                        Send-Win32Paste
                     }
                 } elseif ($msg.type -eq "error") {
                     $errText = $msg.message
