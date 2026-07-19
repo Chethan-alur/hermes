@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 # Windows Virtual Keycode Map for Special / Media / Launch Keys
 SPECIAL_VK_MAP = {
+    170: "SEARCH (VK_BROWSER_SEARCH)",
     183: "CALCULATOR (VK_LAUNCH_APP2)",
     182: "MY_COMPUTER (VK_LAUNCH_APP1)",
     180: "MAIL (VK_LAUNCH_MAIL)",

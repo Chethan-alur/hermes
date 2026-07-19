@@ -71,9 +71,12 @@ class HotkeyManager:
         if keyboard is None:
             return False
         
-        # Match F12 default
-        if self.hotkey_name == "f12" and key == keyboard.Key.f12:
-            return True
+        # Match F12 or Search Key (VK 170 / VK_BROWSER_SEARCH - Dell laptop F12 icon)
+        if self.hotkey_name in ["f12", "search"]:
+            if key == keyboard.Key.f12:
+                return True
+            if hasattr(key, 'vk') and key.vk in [170, 0xAA]:
+                return True
 
         # Match Calculator Key (VK 183 / VK_LAUNCH_APP2)
         if self.hotkey_name == "calculator":
