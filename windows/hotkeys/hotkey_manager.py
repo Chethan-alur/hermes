@@ -68,6 +68,22 @@ class HotkeyManager:
     def _is_target_key(self, key) -> bool:
         if keyboard is None:
             return False
-        if key == keyboard.Key.ctrl_r:
+        
+        # Match Right Ctrl default
+        if self.hotkey_name == "ctrl_r" and key == keyboard.Key.ctrl_r:
             return True
+
+        # Match Calculator Key (VK 183 / VK_LAUNCH_APP2)
+        if self.hotkey_name == "calculator":
+            if hasattr(key, 'vk') and key.vk in [183, 0xB7, 0x97]:
+                return True
+
+        # Match generic Virtual Keycode (VK) number
+        if hasattr(key, 'vk') and str(key.vk) == str(self.hotkey_name):
+            return True
+
+        # Match pynput named key
+        if hasattr(keyboard.Key, self.hotkey_name) and key == getattr(keyboard.Key, self.hotkey_name):
+            return True
+
         return False
