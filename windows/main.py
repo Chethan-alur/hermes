@@ -2,11 +2,12 @@
 """
 Windows Companion Daemon - Project Hermes
 Coordinates Global Hotkey, TCP Transport, and Text Injection into active window.
-Supports background daemon mode and instant single-key Push-To-Talk for WSL/Linux terminal.
+Maintains persistent TCP socket connection to Android companion over port 9999.
 """
 
 import sys
 import time
+import select
 import logging
 from pathlib import Path
 
@@ -25,22 +26,24 @@ logging.basicConfig(
 logger = logging.getLogger("HermesWindowsMain")
 
 
-def read_single_key():
-    """Reads a single keypress instantly without requiring [Enter] (Linux/WSL)."""
+def read_key_nonblocking():
+    """Non-blocking single keypress reader for Linux/WSL terminal."""
     try:
         import tty
         import termios
         fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        return ch
+        rlist, _, _ = select.select([fd], [], [], 0.1)
+        if rlist:
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return ch
     except Exception:
-        # Fallback to standard input if tty/termios unavailable
-        return sys.stdin.read(1)
+        pass
+    return None
 
 
 class HermesWindowsDaemon:
@@ -54,7 +57,7 @@ class HermesWindowsDaemon:
     def start(self):
         logger.info("Initializing Project Hermes Windows Companion Client...")
         
-        # Start TCP Transport auto-reconnection loop
+        # Start TCP Transport auto-reconnection loop (maintains persistent socket connection)
         self.transport.start()
 
         # Start Global Hotkey Listener (if pynput is available)
@@ -77,24 +80,23 @@ class HermesWindowsDaemon:
             except (KeyboardInterrupt, SystemExit):
                 self.stop()
         else:
-            logger.info("Running in Instant Single-Key Terminal Mode (WSL / Linux).")
+            logger.info("Running in Terminal Interactive Mode (WSL / Linux).")
             print("\n" + "=" * 60)
             print("🎙️ Project Hermes Terminal Controller (WSL / Linux Mode)")
             print("=" * 60)
-            print("Press [SPACEBAR] to START/STOP Push-To-Talk instantly!")
+            print("Press [SPACEBAR] to START/STOP Push-To-Talk!")
             print("Press [q] to quit.\n")
 
             try:
                 while self.running:
-                    print("👉 Press [SPACEBAR] to toggle dictation (or 'q' to quit)...", end="", flush=True)
-                    ch = read_single_key()
-                    print() # newline after keypress
-                    
-                    if ch.lower() in ["q", "\x03"]: # 'q' or Ctrl+C
-                        self.stop()
-                        break
-                    elif ch in [" ", "s", "r", "\r", "\n"]:
-                        self.toggle_push_to_talk()
+                    ch = read_key_nonblocking()
+                    if ch:
+                        if ch.lower() in ["q", "\x03"]: # 'q' or Ctrl+C
+                            self.stop()
+                            break
+                        elif ch in [" ", "s", "r", "\r", "\n"]:
+                            self.toggle_push_to_talk()
+                    time.sleep(0.05)
             except (KeyboardInterrupt, EOFError):
                 logger.info("Shutting down daemon...")
                 self.stop()
@@ -102,7 +104,7 @@ class HermesWindowsDaemon:
     def toggle_push_to_talk(self):
         if not self.is_listening_toggle:
             self.is_listening_toggle = True
-            print("🔴 [LISTENING...] Speak into your phone now!")
+            print("\n🔴 [LISTENING...] Speak into your phone now! Press [SPACEBAR] when finished.")
             self.send_command({
                 "version": "1.0",
                 "type": "command",
@@ -111,7 +113,7 @@ class HermesWindowsDaemon:
             })
         else:
             self.is_listening_toggle = False
-            print("⏹️ [STOPPING...] Processing speech output...")
+            print("\n⏹️ [STOPPING...] Processing speech output...")
             self.send_command({
                 "version": "1.0",
                 "type": "command",
@@ -126,7 +128,7 @@ class HermesWindowsDaemon:
         logger.info("Hermes Windows Companion stopped.")
 
     def send_command(self, command_payload: dict):
-        logger.info(f"Dispatching command: {command_payload.get('command')}")
+        logger.info(f"Dispatching command over persistent socket: {command_payload.get('command')}")
         self.transport.send_json(command_payload)
 
     def on_protocol_message(self, message: dict):
@@ -135,13 +137,13 @@ class HermesWindowsDaemon:
         if msg_type == "partial":
             text = message.get("text", "")
             logger.info(f"[PARTIAL STREAM]: {text}")
-            print(f"  ... {text}")
+            print(f"  ... Partial #{message.get('sequence', 0)}: \"{text}\"")
             
         elif msg_type == "final":
             text = message.get("text", "")
             confidence = message.get("confidence", 1.0)
             logger.info(f"[FINAL RESULT (Conf: {confidence})]: {text}")
-            print(f"\n✨ [FINAL SPEECH TEXT]: {text}\n")
+            print(f"\n✨ [FINAL SPEECH TEXT]: \"{text}\"\n")
             # Inject final text into active target application
             self.injector.inject(text)
 
@@ -152,7 +154,7 @@ class HermesWindowsDaemon:
             print(f"\n❌ [ERROR]: {code} - {msg}\n")
 
         elif msg_type == "heartbeat":
-            logger.debug(f"[HEARTBEAT]: Status={message.get('status')}")
+            logger.info(f"[HEARTBEAT]: Android Server Ready (Status: {message.get('status')})")
 
 
 def main():
