@@ -10,11 +10,15 @@ import android.util.Log
 import java.util.Locale
 
 sealed class SpeechEvent {
+    object ListeningStarted : SpeechEvent()
+    object ListeningStopped : SpeechEvent()
+    object ReadyForSpeech : SpeechEvent()
+    object BeginningOfSpeech : SpeechEvent()
+    object EndOfSpeech : SpeechEvent()
+    object Timeout : SpeechEvent()
     data class PartialResult(val text: String, val sequence: Int) : SpeechEvent()
     data class FinalResult(val text: String, val confidence: Float) : SpeechEvent()
     data class Error(val code: Int, val message: String) : SpeechEvent()
-    object SpeechStarted : SpeechEvent()
-    object SpeechEnded : SpeechEvent()
 }
 
 interface SpeechEngine {
@@ -45,20 +49,23 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         this.listener = onEvent
         this.sequenceCounter = 0
 
+        listener?.invoke(SpeechEvent.ListeningStarted)
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true) // Force local Tensor G3 on-device AI
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true) // Force Tensor G3 local NPU offline processing
         }
 
         recognizer?.startListening(intent)
-        Log.i(TAG, "SpeechRecognizer started with local offline engine preference.")
+        Log.i(TAG, "SpeechRecognizer started offline model.")
     }
 
     override fun stopListening() {
         recognizer?.stopListening()
-        Log.i(TAG, "SpeechRecognizer stop requested.")
+        listener?.invoke(SpeechEvent.ListeningStopped)
+        Log.i(TAG, "SpeechRecognizer stopped.")
     }
 
     override fun destroy() {
@@ -71,10 +78,12 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 Log.d(TAG, "Ready for speech")
+                listener?.invoke(SpeechEvent.ReadyForSpeech)
             }
 
             override fun onBeginningOfSpeech() {
-                listener?.invoke(SpeechEvent.SpeechStarted)
+                Log.d(TAG, "Beginning of speech")
+                listener?.invoke(SpeechEvent.BeginningOfSpeech)
             }
 
             override fun onRmsChanged(rmsdB: Float) {}
@@ -82,12 +91,16 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             override fun onBufferReceived(buffer: ByteArray?) {}
 
             override fun onEndOfSpeech() {
-                listener?.invoke(SpeechEvent.SpeechEnded)
+                Log.d(TAG, "End of speech")
+                listener?.invoke(SpeechEvent.EndOfSpeech)
             }
 
             override fun onError(error: Int) {
                 val errorMsg = getErrorMessage(error)
                 Log.e(TAG, "Speech recognition error: $errorMsg (code $error)")
+                if (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    listener?.invoke(SpeechEvent.Timeout)
+                }
                 listener?.invoke(SpeechEvent.Error(error, errorMsg))
             }
 

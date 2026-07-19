@@ -30,6 +30,14 @@ tasks:
       - echo "sdk.dir={{.ANDROID_HOME}}" > android/local.properties
       - echo "✅ Environment setup complete. SDK linked to {{.ANDROID_HOME}}"
 
+  deploy:
+    desc: One-command full deployment (setup env, build APK, install via ADB, forward port)
+    deps: [setup, android:build]
+    cmds:
+      - task: android:install
+      - task: adb:forward
+      - echo "✅ Deployment complete! Run 'task windows:run' or 'task test:mode' to start."
+
   android:build:
     desc: Build the Android companion app APK
     deps: [setup]
@@ -77,6 +85,11 @@ tasks:
     desc: Run protocol schema validation and unit tests
     cmds:
       - python3 .agents/skills/test-runner/scripts/run_tests.py
+
+  test:mode:
+    desc: Run interactive Test Mode simulator and payload playback (REQ-FUNC-011)
+    cmds:
+      - python3 windows/test_mode.py --playback
 
   validate-protocol:
     desc: Validate JSON protocol payloads against schemas

@@ -26,6 +26,7 @@ By linking each requirement to formal JSON schemas in [`protocol/schemas/v1/`](f
 | **REQ-FUNC-008** | High-speed USB communication via ADB TCP port forwarding | `android/transport`, `windows/transport` | All Schemas (`v1/*.json`) | `INT-USB-COMM-001` | Establish socket over `adb forward tcp:9999 tcp:9999`; transmit 1000 message payloads and verify 0 loss. | Defined |
 | **REQ-FUNC-009** | System and speech error handling & diagnostic alerts | `android/speech`, `windows/overlay` | [`error.schema.json`](file:///home/calur/github/hermes/protocol/schemas/v1/error.schema.json) | `UT-PROTO-ERR-001` | Trigger simulated engine timeout; assert `error` payload parsed and overlay transitions to ERROR state. | Defined |
 | **REQ-FUNC-010** | Transport keep-alive heartbeat monitoring | `android/transport`, `windows/transport` | [`heartbeat.schema.json`](file:///home/calur/github/hermes/protocol/schemas/v1/heartbeat.schema.json) | `UT-PROTO-HB-001` | Emit periodic heartbeats every 5s; verify transport connection health check flags `READY` state. | Defined |
+| **REQ-FUNC-011** | Test mode CLI & simulator for testing protocol concepts and payload playback | `windows/testing` | N/A | `UT-TESTMODE-001` | Defined |
 
 ---
 
