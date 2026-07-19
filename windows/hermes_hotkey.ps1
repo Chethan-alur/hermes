@@ -50,6 +50,7 @@ $isListening = $false
 $reader = New-Object System.IO.StreamReader($global:stream)
 $writer = New-Object System.IO.StreamWriter($global:stream)
 $writer.AutoFlush = $true
+$wsh = New-Object -ComObject WScript.Shell
 
 function Send-HermesCommand($cmdName) {
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -83,13 +84,13 @@ while ($true) {
                 if ($msg.type -eq "partial") {
                     Write-Host "  ... Partial: `"$($msg.text)`"" -ForegroundColor DarkGray
                 } elseif ($msg.type -eq "final") {
-                    Write-Host "`n[FINAL SPEECH TEXT]: `"$($msg.text)`"`n" -ForegroundColor Green
+                    Write-Host "`n[FINAL SPEECH RESULT]: `"$($msg.text)`"`n" -ForegroundColor Green
                     if ($msg.text -and $msg.text.Trim().Length -gt 0) {
-                        Write-Host "[INJECTING TEXT]: '$($msg.text)'" -ForegroundColor Cyan
+                        Write-Host "[INJECTING TEXT INTO ACTIVE WINDOW]: '$($msg.text)'" -ForegroundColor Cyan
                         try {
-                            [System.Windows.Forms.SendKeys]::SendWait($msg.text)
+                            $wsh.SendKeys($msg.text)
                         } catch {
-                            Write-Host "[INJECTION NOTICE]: $($_.Exception.Message)" -ForegroundColor Gray
+                            [System.Windows.Forms.SendKeys]::SendWait($msg.text)
                         }
                     }
                 } elseif ($msg.type -eq "heartbeat") {
