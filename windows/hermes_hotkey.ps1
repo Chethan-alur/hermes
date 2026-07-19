@@ -124,6 +124,12 @@ while ($true) {
                         Start-Sleep -Milliseconds 100
                         Send-Win32Paste
                     }
+                } elseif ($msg.type -eq "error") {
+                    $errText = $msg.message
+                    $errCode = $msg.code
+                    Write-Host ""
+                    Write-Host "[SPEECH ERROR]: $errText (Code: $errCode)" -ForegroundColor Red
+                    Write-Host ""
                 } elseif ($msg.type -eq "heartbeat") {
                     Write-Host "[HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
                 }
