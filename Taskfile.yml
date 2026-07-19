@@ -43,7 +43,7 @@ tasks:
     deps: [setup]
     dir: android
     cmds:
-      - chmod +x ./gradlew 2>/devnull || true
+      - chmod +x ./gradlew
       - ./gradlew assembleDebug --stacktrace
     sources:
       - 'app/src/**/*'
