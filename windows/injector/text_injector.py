@@ -33,6 +33,20 @@ class TextInjector:
             print(f"\n[TEXT INJECTED]: {text}")
             return True
 
+        # Attempt to focus Notepad if running
+        try:
+            import win32gui
+            import time
+            def enum_windows_callback(hwnd, extra):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    if "Notepad" in title or "notepad" in title:
+                        win32gui.SetForegroundWindow(hwnd)
+            win32gui.EnumWindows(enum_windows_callback, None)
+            time.sleep(0.1)
+        except Exception:
+            pass
+
         if self.use_clipboard_fallback:
             return self._inject_via_clipboard(text)
         else:
