@@ -65,7 +65,7 @@ class HermesWindowsDaemon:
         self.running = True
 
         if keyboard is not None:
-            logger.info("Hermes Companion running with global hotkey! Hold 'Right Ctrl' to dictate.")
+            logger.info("Hermes Companion running with global hotkey! Press/Hold 'F12' to dictate.")
             try:
                 while self.running:
                     time.sleep(1.0)
