@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Gradle wrapper script for Project Hermes
+
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+
+# Use JDK 17 from /home/calur/android-dev if JAVA_HOME is not set
+if [ -z "$JAVA_HOME" ] && [ -d "/home/calur/android-dev/jdk-17.0.19+10" ]; then
+    export JAVA_HOME="/home/calur/android-dev/jdk-17.0.19+10"
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+if [ -z "$ANDROID_HOME" ] && [ -d "/home/calur/android-dev/sdk" ]; then
+    export ANDROID_HOME="/home/calur/android-dev/sdk"
+    export ANDROID_SDK_ROOT="/home/calur/android-dev/sdk"
+fi
+
+WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ ! -f "$WRAPPER_JAR" ]; then
+    echo "Downloading Gradle wrapper jar..."
+    mkdir -p "$APP_HOME/gradle/wrapper"
+    curl -sSL "https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar" -o "$WRAPPER_JAR" || true
+fi
+
+if [ -f "$WRAPPER_JAR" ]; then
+    exec "$JAVA_HOME/bin/java" -jar "$WRAPPER_JAR" "$@"
+else
+    echo "Executing via java jar / gradle runner..."
+    exec java "$@"
+fi

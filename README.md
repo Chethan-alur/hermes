@@ -54,17 +54,34 @@ When you hold a hotkey on Windows (default: **`Right Ctrl`**), your phone transc
 
 ---
 
-## 🏗️ 3. Building the Project
+## 🏗️ 3. Building & Environment Setup (Go Taskfile)
 
-### 3.1 Building the Android Companion App
-1. Open the [`android/`](file:///home/calur/github/hermes/android) project folder in **Android Studio**.
-2. Connect your phone via USB and verify USB debugging:
+This project uses [`Taskfile.yml`](file:///home/calur/github/hermes/Taskfile.yml) for automated environment configuration and build orchestration (linking `/home/calur/android-dev` SDK & JDK 17).
+
+### Quick Commands (`task`)
+```bash
+# 1. Setup local environment and link Android SDK:
+task setup
+
+# 2. Build Android companion app APK:
+task android:build
+
+# 3. Install APK onto connected Android device:
+task android:install
+
+# 4. Setup ADB USB port forwarding (tcp:9999):
+task adb:forward
+
+# 5. Run test suite:
+task test
+```
+
+### Manual Build Steps
+1. Open [`android/`](file:///home/calur/github/hermes/android) in Android Studio.
+2. Ensure `local.properties` specifies `sdk.dir=/home/calur/android-dev/sdk`.
+3. Assemble the debug APK:
    ```bash
-   adb devices
-   ```
-3. Build and assemble the APK:
-   ```bash
-   ./gradlew assembleDebug
+   cd android && ./gradlew assembleDebug
    ```
 
 ### 3.2 Setting Up the Windows Companion App

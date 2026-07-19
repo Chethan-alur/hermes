@@ -1,0 +1,89 @@
+version: '3'
+
+vars:
+  ANDROID_DEV_DIR: '/home/calur/android-dev'
+  JAVA_HOME: '/home/calur/android-dev/jdk-17.0.19+10'
+  ANDROID_HOME: '/home/calur/android-dev/sdk'
+  ANDROID_SDK_ROOT: '/home/calur/android-dev/sdk'
+  ADB: '/home/calur/android-dev/sdk/platform-tools/adb'
+  GRADLE_DIST: '8.5'
+
+env:
+  JAVA_HOME: '{{.JAVA_HOME}}'
+  ANDROID_HOME: '{{.ANDROID_HOME}}'
+  ANDROID_SDK_ROOT: '{{.ANDROID_SDK_ROOT}}'
+  PATH: '{{.JAVA_HOME}}/bin:{{.ANDROID_HOME}}/cmdline-tools/latest/bin:{{.ANDROID_HOME}}/platform-tools:{{.PATH}}'
+
+tasks:
+  default:
+    desc: Setup environment, validate protocol, and build Android app
+    cmds:
+      - task: setup
+      - task: test
+      - task: android:build
+
+  setup:
+    desc: Setup local development environment and local.properties
+    cmds:
+      - echo "Setting up Android environment for Project Hermes..."
+      - mkdir -p android
+      - echo "sdk.dir={{.ANDROID_HOME}}" > android/local.properties
+      - echo "✅ Environment setup complete. SDK linked to {{.ANDROID_HOME}}"
+
+  android:build:
+    desc: Build the Android companion app APK
+    deps: [setup]
+    dir: android
+    cmds:
+      - chmod +x ./gradlew 2>/dev/null || true
+      - ./gradlew assembleDebug --stacktrace
+    sources:
+      - 'app/src/**/*'
+      - 'app/build.gradle.kts'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+    generates:
+      - 'app/build/outputs/apk/debug/app-debug.apk'
+
+  android:install:
+    desc: Install debug APK onto connected Android device via ADB
+    deps: [android:build]
+    cmds:
+      - '{{.ADB}} install -r android/app/build/outputs/apk/debug/app-debug.apk'
+
+  android:clean:
+    desc: Clean Android build artifacts
+    dir: android
+    cmds:
+      - ./gradlew clean
+
+  adb:forward:
+    desc: Setup ADB port forwarding (tcp:9999 -> tcp:9999)
+    cmds:
+      - '{{.ADB}} forward tcp:9999 tcp:9999'
+
+  adb:status:
+    desc: Check active ADB forward rules and connected devices
+    cmds:
+      - '{{.ADB}} devices'
+      - '{{.ADB}} forward --list'
+
+  windows:run:
+    desc: Launch Windows companion application daemon
+    cmds:
+      - python3 windows/main.py
+
+  test:
+    desc: Run protocol schema validation and unit tests
+    cmds:
+      - python3 .agents/skills/test-runner/scripts/run_tests.py
+
+  validate-protocol:
+    desc: Validate JSON protocol payloads against schemas
+    cmds:
+      - python3 .agents/skills/protocol-validator/scripts/validate_protocol.py --all
+
+  check-rtm:
+    desc: Check Requirements Traceability Matrix (RTM) alignment
+    cmds:
+      - python3 .agents/skills/rtm-manager/scripts/check_rtm_alignment.py
