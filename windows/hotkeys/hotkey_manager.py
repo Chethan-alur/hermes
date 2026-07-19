@@ -38,26 +38,32 @@ class HotkeyManager:
             self.listener = None
 
     def _on_press(self, key):
-        if self._is_target_key(key) and not self.is_pressed:
-            self.is_pressed = True
-            logger.info("Push-To-Talk key DOWN -> Emitting start_listening")
-            self.on_command({
-                "version": "1.0",
-                "type": "command",
-                "command": "start_listening",
-                "timestamp": int(time.time() * 1000)
-            })
+        logger.debug(f"[RAW KEY PRESS]: {key}")
+        if self._is_target_key(key):
+            logger.info(f"🔑 [HOTKEY EVENT] Right Ctrl KEY DOWN detected! (is_pressed state={self.is_pressed})")
+            if not self.is_pressed:
+                self.is_pressed = True
+                logger.info("📡 [HOTKEY COMMAND] Emitting 'start_listening' payload to Android...")
+                self.on_command({
+                    "version": "1.0",
+                    "type": "command",
+                    "command": "start_listening",
+                    "timestamp": int(time.time() * 1000)
+                })
 
     def _on_release(self, key):
-        if self._is_target_key(key) and self.is_pressed:
-            self.is_pressed = False
-            logger.info("Push-To-Talk key UP -> Emitting stop_listening")
-            self.on_command({
-                "version": "1.0",
-                "type": "command",
-                "command": "stop_listening",
-                "timestamp": int(time.time() * 1000)
-            })
+        logger.debug(f"[RAW KEY RELEASE]: {key}")
+        if self._is_target_key(key):
+            logger.info(f"🔑 [HOTKEY EVENT] Right Ctrl KEY UP detected! (is_pressed state={self.is_pressed})")
+            if self.is_pressed:
+                self.is_pressed = False
+                logger.info("📡 [HOTKEY COMMAND] Emitting 'stop_listening' payload to Android...")
+                self.on_command({
+                    "version": "1.0",
+                    "type": "command",
+                    "command": "stop_listening",
+                    "timestamp": int(time.time() * 1000)
+                })
 
     def _is_target_key(self, key) -> bool:
         if keyboard is None:

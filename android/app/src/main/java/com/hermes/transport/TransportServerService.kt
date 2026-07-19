@@ -86,7 +86,7 @@ class TransportServerService : Service() {
                 put("timestamp", System.currentTimeMillis())
             })
 
-            var line: String?
+            var line: String? = null
             while (isRunning && reader.readLine().also { line = it } != null) {
                 line?.let { parseIncomingCommand(it) }
             }
@@ -99,6 +99,7 @@ class TransportServerService : Service() {
 
     private fun parseIncomingCommand(jsonStr: String) {
         try {
+            Log.d(TAG, "📥 [TCP RECV RAW]: $jsonStr")
             val json = JSONObject(jsonStr)
             val type = json.optString("type")
             val command = json.optString("command")
@@ -106,20 +107,24 @@ class TransportServerService : Service() {
             if (type == "command") {
                 when (command) {
                     "start_listening" -> {
-                        Log.i(TAG, "Command received: start_listening")
+                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'start_listening' -> Triggering Speech Engine listening...")
                         speechEngine?.startListening { event -> handleSpeechEvent(event) }
                     }
                     "stop_listening" -> {
-                        Log.i(TAG, "Command received: stop_listening")
+                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'stop_listening' -> Stopping Speech Engine recognition...")
                         speechEngine?.stopListening()
                     }
                     "ping" -> {
+                        Log.d(TAG, "💓 [HEARTBEAT RECV]: Responding with ready heartbeat...")
                         sendJson(JSONObject().apply {
                             put("version", "1.0")
                             put("type", "heartbeat")
                             put("status", "ready")
                             put("timestamp", System.currentTimeMillis())
                         })
+                    }
+                    else -> {
+                        Log.w(TAG, "⚠️ Unknown command received: $command")
                     }
                 }
             }
@@ -157,8 +162,7 @@ class TransportServerService : Service() {
                     put("timestamp", System.currentTimeMillis())
                 })
             }
-            SpeechEvent.SpeechStarted -> Log.d(TAG, "Speech event: Started")
-            SpeechEvent.SpeechEnded -> Log.d(TAG, "Speech event: Ended")
+            else -> Log.d(TAG, "Speech event: $event")
         }
     }
 
