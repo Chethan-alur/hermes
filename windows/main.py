@@ -34,10 +34,8 @@ class HermesWindowsDaemon:
     def start(self):
         logger.info("Initializing Project Hermes Windows Companion Client...")
         
-        # Connect TCP Transport to Android over ADB
-        connected = self.transport.connect()
-        if not connected:
-            logger.warning("Could not connect to Android transport server. Ensure ADB forward is active (adb forward tcp:9999 tcp:9999) and phone app is running.")
+        # Start TCP Transport auto-reconnection loop
+        self.transport.start()
 
         # Start Global Hotkey Listener
         self.hotkey_manager.start()
@@ -54,7 +52,7 @@ class HermesWindowsDaemon:
     def stop(self):
         self.running = False
         self.hotkey_manager.stop()
-        self.transport.disconnect()
+        self.transport.stop()
         logger.info("Hermes Windows Companion stopped.")
 
     def send_command(self, command_payload: dict):

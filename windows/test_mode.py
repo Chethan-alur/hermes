@@ -93,9 +93,16 @@ class TestModeSimulator:
         logger.info(f"Starting Mock Android TCP Server on {self.host}:{self.port}...")
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((self.host, self.port))
-        server.listen(1)
+        try:
+            server.bind((self.host, self.port))
+        except OSError as e:
+            logger.error(f"Failed to bind {self.host}:{self.port} - {e}")
+            print(f"\n⚠️ [PORT CONFLICT]: Port {self.port} is bound by another process (such as ADB forward rule).")
+            print("👉 To run mock server on port 9999, run: adb forward --remove tcp:9999")
+            print("👉 Or run mock server on another port: python3 windows/test_mode.py --server --port 9998\n")
+            return
 
+        server.listen(1)
         print(f"✅ Mock Android Server listening on {self.host}:{self.port}")
         print("Launch 'python3 windows/main.py' in another terminal to test connection.")
 
@@ -157,9 +164,10 @@ def main():
     parser.add_argument("--interactive", action="store_true", help="Run interactive speech simulation")
     parser.add_argument("--server", action="store_true", help="Run mock Android TCP server")
     parser.add_argument("--playback", action="store_true", help="Play back protocol test fixtures")
+    parser.add_argument("--port", type=int, default=9999, help="TCP port (default: 9999)")
     args = parser.parse_args()
 
-    sim = TestModeSimulator()
+    sim = TestModeSimulator(port=args.port)
 
     if args.server:
         sim.run_mock_android_server()

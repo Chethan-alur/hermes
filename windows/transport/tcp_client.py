@@ -11,31 +11,44 @@ class TCPTransportClient:
     """
     TCP Socket Client connecting to Android Foreground Service over ADB port forward (tcp:9999).
     Framing: Newline-delimited JSON messages.
+    Features: Auto-reconnection loop (REQ-NFR-005).
     """
-    def __init__(self, host: str = "127.0.0.1", port: int = 9999, on_message_callback=None):
+    def __init__(self, host: str = "127.0.0.1", port: int = 9999, on_message_callback=None, auto_reconnect: bool = True):
         self.host = host
         self.port = port
         self.on_message = on_message_callback
+        self.auto_reconnect = auto_reconnect
         self.socket = None
         self.is_connected = False
         self.running = False
         self.recv_thread = None
+        self.reconnect_thread = None
+
+    def start(self):
+        self.running = True
+        if self.auto_reconnect:
+            self.reconnect_thread = threading.Thread(target=self._reconnect_loop, daemon=True)
+            self.reconnect_thread.start()
+        else:
+            self.connect()
 
     def connect(self) -> bool:
+        if self.is_connected:
+            return True
+
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(5.0)
             self.socket.connect((self.host, self.port))
             self.is_connected = True
-            self.running = True
-            logger.info(f"Connected to Android transport server at {self.host}:{self.port}")
+            logger.info(f"✅ Connected to Android transport server at {self.host}:{self.port}")
             
             self.recv_thread = threading.Thread(target=self._receive_loop, daemon=True)
             self.recv_thread.start()
             return True
         except Exception as e:
-            logger.warning(f"Unable to connect to transport server at {self.host}:{self.port}: {e}")
-            self.is_connected = False
+            logger.debug(f"Unable to connect to transport server at {self.host}:{self.port}: {e}")
+            self._cleanup_socket()
             return False
 
     def send_json(self, payload: dict) -> bool:
@@ -54,7 +67,15 @@ class TCPTransportClient:
             return False
 
     def disconnect(self):
+        self.is_connected = False
+        self._cleanup_socket()
+        logger.info("TCP socket disconnected.")
+
+    def stop(self):
         self.running = False
+        self.disconnect()
+
+    def _cleanup_socket(self):
         self.is_connected = False
         if self.socket:
             try:
@@ -62,15 +83,21 @@ class TCPTransportClient:
             except Exception:
                 pass
             self.socket = None
-        logger.info("TCP socket disconnected.")
+
+    def _reconnect_loop(self):
+        while self.running:
+            if not self.is_connected:
+                logger.info(f"Attempting connection to Android transport server at {self.host}:{self.port}...")
+                self.connect()
+            time.sleep(2.0)
 
     def _receive_loop(self):
         buffer = ""
-        while self.running and self.socket:
+        while self.running and self.is_connected and self.socket:
             try:
                 chunk = self.socket.recv(4096).decode("utf-8")
                 if not chunk:
-                    logger.warning("Socket closed by remote server.")
+                    logger.warning("Socket connection closed by remote server.")
                     break
                 
                 buffer += chunk
