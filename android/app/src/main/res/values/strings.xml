@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Project Hermes</string>
+    <string name="app_subtitle">Voice dictation companion</string>
+
+    <string name="label_service_status">SERVICE STATUS</string>
+    <string name="status_ready">READY</string>
+    <string name="port_info">Listening on 127.0.0.1 : 9999</string>
+
+    <string name="label_controls">Controls</string>
+    <string name="btn_start_service">Start Service</string>
+    <string name="btn_stop_service">Stop Service</string>
+    <string name="btn_start_recognition">Start Recognition</string>
+    <string name="btn_stop_recognition">Stop Recognition</string>
+
+    <string name="label_console">Event Console</string>
+    <string name="btn_clear">Clear</string>
+</resources>
