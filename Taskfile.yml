@@ -89,6 +89,11 @@ tasks:
       - pkill -f "python3 windows/main.py" || true
       - echo "🛑 Hermes Windows companion daemon stopped."
 
+  windows:ps:
+    desc: Run native Windows PowerShell global hotkey daemon (F12 / Search / Calculator key)
+    cmds:
+      - powershell.exe -ExecutionPolicy Bypass -File windows/hermes_hotkey.ps1
+
   test:
     desc: Run protocol schema validation and unit tests
     cmds:
