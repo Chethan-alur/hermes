@@ -68,7 +68,7 @@ class TransportServerService : Service() {
 
                     val socket = serverSocket?.accept() ?: break
                     Log.i(TAG, "Client connected from ${socket.inetAddress}")
-                    handleClientConnection(socket)
+                    Thread { handleClientConnection(socket) }.start()
                 } catch (e: Exception) {
                     if (isRunning) {
                         Log.e(TAG, "Server socket exception: ${e.message}. Retrying accept in 1s...")
@@ -79,19 +79,22 @@ class TransportServerService : Service() {
         }.start()
     }
 
+    private val activeWriters = java.util.Collections.synchronizedList(mutableListOf<PrintWriter>())
+
     private fun handleClientConnection(socket: Socket) {
-        this.clientSocket = socket
+        var clientWriter: PrintWriter? = null
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-            this.writer = PrintWriter(socket.getOutputStream(), true)
+            clientWriter = PrintWriter(socket.getOutputStream(), true)
+            activeWriters.add(clientWriter)
 
             // Send initial connection heartbeat
-            sendJson(JSONObject().apply {
+            clientWriter.println(JSONObject().apply {
                 put("version", "1.0")
                 put("type", "heartbeat")
                 put("status", "ready")
                 put("timestamp", System.currentTimeMillis())
-            })
+            }.toString())
 
             var line: String? = null
             while (isRunning && reader.readLine().also { line = it } != null) {
@@ -100,7 +103,8 @@ class TransportServerService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Connection error: ${e.message}")
         } finally {
-            closeClientSocket()
+            clientWriter?.let { activeWriters.remove(it) }
+            try { socket.close() } catch (_: Exception) {}
         }
     }
 
@@ -180,12 +184,19 @@ class TransportServerService : Service() {
     }
 
     private fun sendJson(json: JSONObject) {
-        try {
-            val raw = json.toString()
-            writer?.println(raw)
-            Log.d(TAG, "Sent JSON: $raw")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error sending JSON: ${e.message}")
+        val raw = json.toString()
+        synchronized(activeWriters) {
+            val iterator = activeWriters.iterator()
+            while (iterator.hasNext()) {
+                val writer = iterator.next()
+                try {
+                    writer.println(raw)
+                    Log.d(TAG, "Broadcast JSON to client: $raw")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed writing to client socket: ${e.message}")
+                    iterator.remove()
+                }
+            }
         }
     }
 
