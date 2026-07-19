@@ -78,7 +78,7 @@ function Send-Win32Paste {
     [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
     Start-Sleep -Milliseconds 30
     [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V UP
-    [Win32Input]::keybd_event(011, 0, 2, [UIntPtr]::Zero) # Ctrl UP
+    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl UP
 }
 
 # Main Event Loop
@@ -99,8 +99,8 @@ while ($true) {
         Send-HermesCommand "stop_listening"
     }
 
-    # Drain all pending JSON lines from stream buffer immediately
-    while ($global:stream.DataAvailable) {
+    # Drain all pending JSON lines from StreamReader buffer or network stream
+    while ($global:stream.DataAvailable -or ($reader.Peek() -ge 0)) {
         $line = $reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
             try {
