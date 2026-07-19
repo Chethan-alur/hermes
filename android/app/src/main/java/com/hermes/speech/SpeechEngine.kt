@@ -31,56 +31,58 @@ interface SpeechEngine {
 /**
  * Continuous, push-to-talk friendly wrapper around [SpeechRecognizer].
  *
- * Android's SpeechRecognizer is a single-utterance API: it endpoints on the first pause
- * and stops on its own. To capture for as long as the user holds the hotkey we run it as a
- * session ([startListening] .. [stopListening]) and transparently restart the recognizer
- * each time it endpoints, accumulating text across segments.
+ * Android's SpeechRecognizer is a single-utterance API that endpoints on the first pause,
+ * so to capture while the hotkey is held we run a session ([startListening]..[stopListening])
+ * and restart the recognizer when it endpoints, accumulating text across segments. A single
+ * [SpeechEvent.FinalResult] (accumulated text, with the last partial folded in) is emitted
+ * only on stop.
  *
- * Robustness: the recognizer does not reliably deliver onResults when we force a stop
- * mid-utterance, so we also track the latest partial for the current segment and fold it
- * into the accumulated text. A single [SpeechEvent.FinalResult] with the accumulated text
- * is emitted only on [stopListening] (i.e. key release), which is what gets pasted.
+ * The recognizer is created lazily (an idle engine never holds the shared recognition
+ * service) and ERROR_RECOGNIZER_BUSY is handled with backoff + recreate + give-up, never a
+ * tight retry loop -- a tight loop jams the system recognition service device-wide.
  */
 class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private var recognizer: SpeechRecognizer? = null
     private var listener: ((SpeechEvent) -> Unit)? = null
     private var sequenceCounter = 0
 
-    @Volatile private var sessionActive = false      // between start and stop commands
-    @Volatile private var segmentRunning = false     // a recognizer segment is live
-    @Volatile private var finalized = false          // the final result has been emitted
-    private val accumulated = StringBuilder()         // text from finalized/flushed segments
-    private var lastPartial = ""                      // latest partial of the current segment
+    @Volatile private var sessionActive = false
+    @Volatile private var segmentRunning = false
+    @Volatile private var finalized = false
+    @Volatile private var busyCount = 0
+    private val accumulated = StringBuilder()
+    private var lastPartial = ""
     private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
         private const val TAG = "AndroidSpeechEngine"
-        // Tolerate long pauses within a single segment so we restart (and drop audio) as
-        // rarely as possible. Note: Google's recognizer may ignore these hints.
         private const val SILENCE_MILLIS = 10000
-        // Recognition language (BCP-47). Indian English by default.
         private const val LANGUAGE = "en-IN"
-        // Runtime offline/online toggle, shared with the UI via SharedPreferences.
         const val PREFS = "hermes_prefs"
         const val KEY_PREFER_OFFLINE = "prefer_offline"
+
+        private const val RESTART_MS = 150L        // normal restart after an endpoint
+        private const val BUSY_BACKOFF_MS = 450L   // slow retry when the service is busy
+        private const val RECREATE_AT_BUSY = 3     // recreate the recognizer after N busy
+        private const val GIVE_UP_BUSY = 8         // give up (report error) after N busy
     }
 
     init {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-            setupRecognitionListener()
-        } else {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.e(TAG, "Speech recognition unavailable on this device.")
         }
+        // The recognizer is created lazily in ensureRecognizer() on first use.
     }
 
     override fun startListening(onEvent: (SpeechEvent) -> Unit) {
         this.listener = onEvent
         this.sequenceCounter = 0
+        this.busyCount = 0
         this.accumulated.setLength(0)
         this.lastPartial = ""
         this.finalized = false
         this.sessionActive = true
+        ensureRecognizer()
         listener?.invoke(SpeechEvent.ListeningStarted)
         Log.i(TAG, "Session started (continuous capture).")
         startSegment()
@@ -96,7 +98,6 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         if (!segmentRunning) {
             emitFinal()
         } else {
-            // Give onResults a brief chance; otherwise finalize from the last partial.
             mainHandler.postDelayed({ emitFinal() }, 1200)
         }
     }
@@ -105,10 +106,23 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         sessionActive = false
         finalized = true
         mainHandler.removeCallbacksAndMessages(null)
-        recognizer?.destroy()
+        try { recognizer?.destroy() } catch (_: Exception) {}
         recognizer = null
         listener = null
         segmentRunning = false
+    }
+
+    private fun ensureRecognizer() {
+        if (recognizer != null) return
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        setupRecognitionListener()
+    }
+
+    private fun recreateRecognizer() {
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = null
+        ensureRecognizer()
     }
 
     private fun startSegment() {
@@ -126,7 +140,6 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             // Add unspoken punctuation and capitalization, like Gboard voice typing.
             putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY)
-            // Offline (private, on-device) by default; the UI switch can request online.
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
@@ -135,16 +148,15 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             recognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.w(TAG, "startListening failed: ${e.message}")
-            restartSegmentDelayed()
+            scheduleRestart(BUSY_BACKOFF_MS)
         }
     }
 
-    private fun restartSegmentDelayed() {
+    private fun scheduleRestart(delayMs: Long) {
         if (!sessionActive) return
-        mainHandler.postDelayed({ startSegment() }, 150)
+        mainHandler.postDelayed({ startSegment() }, delayMs)
     }
 
-    /** Fold any pending partial (speech not confirmed by onResults) into accumulated text. */
     private fun flushPartial() {
         val p = lastPartial.trim()
         if (p.isNotEmpty()) {
@@ -156,8 +168,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
     private fun continueOrFinalize() {
         if (sessionActive) {
-            flushPartial()          // preserve this segment's speech before restarting
-            restartSegmentDelayed()
+            flushPartial()
+            scheduleRestart(RESTART_MS)
         } else {
             emitFinal()
         }
@@ -174,9 +186,29 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
     }
 
+    /** ERROR_RECOGNIZER_BUSY / ERROR_CLIENT: back off, recreate, and eventually give up. */
+    private fun handleBusy(error: Int) {
+        busyCount++
+        when {
+            busyCount >= GIVE_UP_BUSY -> {
+                sessionActive = false
+                finalized = true
+                Log.e(TAG, "Recognizer stuck busy after $busyCount tries; giving up.")
+                listener?.invoke(SpeechEvent.Error(error, "Recognizer busy - please try again"))
+            }
+            busyCount == RECREATE_AT_BUSY -> {
+                Log.w(TAG, "Recognizer busy x$busyCount; recreating recognizer.")
+                recreateRecognizer()
+                scheduleRestart(BUSY_BACKOFF_MS)
+            }
+            else -> scheduleRestart(BUSY_BACKOFF_MS)
+        }
+    }
+
     private fun setupRecognitionListener() {
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
+                busyCount = 0
                 listener?.invoke(SpeechEvent.ReadyForSpeech)
             }
 
@@ -188,26 +220,27 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             override fun onBufferReceived(buffer: ByteArray?) {}
 
             override fun onEndOfSpeech() {
-                Log.i(TAG, "onEndOfSpeech (recognizer endpointed)")
                 listener?.invoke(SpeechEvent.EndOfSpeech)
             }
 
             override fun onError(error: Int) {
                 segmentRunning = false
                 if (!sessionActive) {
-                    emitFinal()   // user released the key; finalize with what we have
+                    emitFinal()
                     return
                 }
-                Log.i(TAG, "Segment error: ${getErrorMessage(error)} (code $error); sessionActive=$sessionActive")
+                Log.i(TAG, "Segment error: ${getErrorMessage(error)} (code $error)")
                 when (error) {
-                    // Benign endpoints during a hold: no speech yet, a pause, or a busy
-                    // recognizer between restarts -> keep the session alive.
+                    // Normal endpoints during a hold: silence / no speech yet.
                     SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        busyCount = 0
+                        continueOrFinalize()
+                    }
+                    // Service occupied / transient client error: back off, do not hammer.
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                    SpeechRecognizer.ERROR_CLIENT -> continueOrFinalize()
+                    SpeechRecognizer.ERROR_CLIENT -> handleBusy(error)
                     else -> {
-                        // Fatal (permissions, audio, server): stop and report.
                         sessionActive = false
                         finalized = true
                         val msg = getErrorMessage(error)
@@ -219,12 +252,13 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
             override fun onResults(results: Bundle?) {
                 segmentRunning = false
+                busyCount = 0
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val segText = if (!matches.isNullOrEmpty()) matches[0] else null
                 if (!segText.isNullOrBlank()) {
                     if (accumulated.isNotEmpty()) accumulated.append(" ")
                     accumulated.append(segText.trim())
-                    lastPartial = ""    // onResults supersedes the partial for this segment
+                    lastPartial = ""
                 }
                 Log.i(TAG, "Segment result: \"${segText ?: ""}\" | accumulated: \"$accumulated\"")
                 continueOrFinalize()
