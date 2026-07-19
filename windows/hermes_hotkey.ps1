@@ -1,6 +1,15 @@
-# Project Hermes - Native Windows PowerShell Global Hotkey Daemon
-# Listens globally for F12 (VK 123), Dell Search Key (VK 170), and Calculator Key (VK 183).
-# Toggle Mode with Key Edge Detection: Press key ONCE to START -> Speak -> Press key ONCE again to STOP & Paste.
+# Project Hermes - Native Windows Companion (PowerShell Daemon)
+# ------------------------------------------------------------------------------
+# Global hotkey dictation bridge. Listens for F12 / Dell Search / Calculator keys,
+# streams speech commands to the Android companion over TCP, and pastes the returned
+# transcript into the active window. Runs from the system tray and supports two modes:
+#
+#   Toggle       - tap the hotkey to start, tap again to stop.
+#   PushToTalk   - hold the hotkey to talk, release to stop and paste.
+#
+# Configuration is read from hermes.config.json next to this script; the tray icon
+# menu can switch modes at runtime and persists the choice.
+# ------------------------------------------------------------------------------
 
 Add-Type -TypeDefinition @"
 using System;
@@ -26,6 +35,9 @@ public class Win32Input {
     [DllImport("kernel32.dll")]
     public static extern uint GetCurrentThreadId();
 
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
     [DllImport("user32.dll")]
     public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
@@ -44,82 +56,150 @@ public class Win32Input {
 "@
 
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
 
-$HOST_IP = "127.0.0.1"
-$PORT = 9999
-$VK_F12 = 123
-$VK_SEARCH = 170
-$VK_CALCULATOR = 183
+# --- Paths ---------------------------------------------------------------------
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$global:ConfigPath = Join-Path $ScriptDir 'hermes.config.json'
+$global:LogPath    = Join-Path $ScriptDir 'hermes.log'
 
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "TOGGLE MODE: Click into your target window (Notepad, Word)," -ForegroundColor Yellow
-Write-Host "then press [F12] (or Search/Calc key) once to START." -ForegroundColor Yellow
-Write-Host "Press [F12] once again to STOP and paste into that window." -ForegroundColor Yellow
-Write-Host "Press Ctrl+C to exit." -ForegroundColor Gray
-Write-Host ""
+# --- Logging -------------------------------------------------------------------
+function Write-Log {
+    param([string]$Message, [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray)
+    $stamp = (Get-Date).ToString('HH:mm:ss')
+    try { Write-Host $Message -ForegroundColor $Color } catch {}
+    try { Add-Content -Path $global:LogPath -Value "$stamp  $Message" -ErrorAction SilentlyContinue } catch {}
+}
 
-$tcpClient = $null
-$stream = $null
+# --- Configuration -------------------------------------------------------------
+function Load-Config {
+    $cfg = [ordered]@{ mode = 'Toggle'; host = '127.0.0.1'; port = 9999; hotkeys = @(123, 170, 183) }
+    if (Test-Path $global:ConfigPath) {
+        try {
+            $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
+            if ($j.mode)    { $cfg.mode = [string]$j.mode }
+            if ($j.host)    { $cfg.host = [string]$j.host }
+            if ($j.port)    { $cfg.port = [int]$j.port }
+            if ($j.hotkeys) { $cfg.hotkeys = @($j.hotkeys | ForEach-Object { [int]$_ }) }
+        } catch { Write-Log "Config parse failed; using defaults. $($_.Exception.Message)" 'DarkYellow' }
+    }
+    if ($cfg.mode -ne 'Toggle' -and $cfg.mode -ne 'PushToTalk') { $cfg.mode = 'Toggle' }
+    return $cfg
+}
+
+function Save-Config {
+    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST }
+    try { ($obj | ConvertTo-Json) | Set-Content -Path $global:ConfigPath -Encoding UTF8 } catch {}
+}
+
+$cfg      = Load-Config
+$HOST_IP  = $cfg.host
+$PORT     = [int]$cfg.port
+$VK_LIST  = @($cfg.hotkeys)
+$script:Mode        = $cfg.mode
+$script:isListening = $false
+$script:ShouldExit  = $false
+$script:targetHwnd  = [IntPtr]::Zero
+$script:consoleHwnd = [Win32Input]::GetConsoleWindow()
+
+# --- Tray icons (drawn in code so no external asset is needed) ------------------
+function New-CircleIcon([System.Drawing.Color]$fill) {
+    $bmp = New-Object System.Drawing.Bitmap 16, 16
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $brush = New-Object System.Drawing.SolidBrush $fill
+    $g.FillEllipse($brush, 2, 2, 11, 11)
+    $brush.Dispose(); $g.Dispose()
+    $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+    $bmp.Dispose()
+    return $icon
+}
+$global:IconIdle = New-CircleIcon ([System.Drawing.Color]::FromArgb(38, 166, 154))  # teal
+$global:IconRec  = New-CircleIcon ([System.Drawing.Color]::FromArgb(229, 57, 53))   # red
+
+# --- System tray ---------------------------------------------------------------
+$script:menu       = New-Object System.Windows.Forms.ContextMenuStrip
+$script:itemStatus = New-Object System.Windows.Forms.ToolStripMenuItem 'Status: Ready'
+$script:itemStatus.Enabled = $false
+$script:itemToggle = New-Object System.Windows.Forms.ToolStripMenuItem 'Mode: Toggle (tap to start/stop)'
+$script:itemPTT    = New-Object System.Windows.Forms.ToolStripMenuItem 'Mode: Push-to-Talk (hold to talk)'
+$script:itemExit   = New-Object System.Windows.Forms.ToolStripMenuItem 'Exit Hermes'
+
+$script:itemToggle.Add_Click({ Set-Mode 'Toggle' })
+$script:itemPTT.Add_Click({ Set-Mode 'PushToTalk' })
+$script:itemExit.Add_Click({ $script:ShouldExit = $true })
+
+$script:menu.Items.Add($script:itemStatus) | Out-Null
+$script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+$script:menu.Items.Add($script:itemToggle) | Out-Null
+$script:menu.Items.Add($script:itemPTT) | Out-Null
+$script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+$script:menu.Items.Add($script:itemExit) | Out-Null
+
+$script:notify = New-Object System.Windows.Forms.NotifyIcon
+$script:notify.Icon = $global:IconIdle
+$script:notify.Text = 'Project Hermes - Ready'
+$script:notify.Visible = $true
+$script:notify.ContextMenuStrip = $script:menu
+
+function Update-ModeChecks {
+    $script:itemToggle.Checked = ($script:Mode -eq 'Toggle')
+    $script:itemPTT.Checked    = ($script:Mode -eq 'PushToTalk')
+}
+
+function Set-Mode($m) {
+    $script:Mode = $m
+    Update-ModeChecks
+    Save-Config
+    if (-not $script:isListening) { $script:notify.Text = "Project Hermes - Ready ($m)" }
+    Write-Log "Mode switched to: $m" 'Cyan'
+}
+
+function Set-ListeningState($listening) {
+    $script:isListening = $listening
+    if ($listening) {
+        $script:notify.Icon = $global:IconRec
+        $script:notify.Text = 'Project Hermes - Listening...'
+        $script:itemStatus.Text = 'Status: Listening...'
+    } else {
+        $script:notify.Icon = $global:IconIdle
+        $script:notify.Text = "Project Hermes - Ready ($script:Mode)"
+        $script:itemStatus.Text = 'Status: Ready'
+    }
+}
+Update-ModeChecks
+
+# --- Transport -----------------------------------------------------------------
+$global:recvBuffer  = New-Object System.Text.StringBuilder
+$readByteBuffer     = New-Object 'byte[]' 4096
 
 function Connect-Transport {
     try {
         $global:tcpClient = New-Object System.Net.Sockets.TcpClient($HOST_IP, $PORT)
         $global:stream = $global:tcpClient.GetStream()
-        # NOTE: We only use a StreamWriter for OUTBOUND commands. Inbound data is read
-        # raw off the socket (see the drain loop below). A StreamReader must NOT be used
-        # here: StreamReader.ReadLine() reads ahead into its own managed buffer, so gating
-        # reads on $stream.DataAvailable strands complete lines (a 'final' transcript) that
-        # then never fire the paste. $reader.Peek() would detect them but blocks on a
-        # NetworkStream, which is why it was removed previously.
+        # Only a StreamWriter for OUTBOUND commands. Inbound data is read raw off the
+        # socket (see the drain loop): a StreamReader reads ahead into its own buffer and
+        # would strand complete lines behind $stream.DataAvailable.
         $global:writer = New-Object System.IO.StreamWriter($global:stream)
         $global:writer.AutoFlush = $true
-        Write-Host "[CONNECTED] Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
+        Write-Log "Connected to Android transport server at ${HOST_IP}:${PORT}" 'Green'
         return $true
     } catch {
-        Write-Host "[RETRY] Connecting to Android transport server at $HOST_IP`:$PORT failed. Retrying..." -ForegroundColor Red
         return $false
     }
 }
 
-while (-not (Connect-Transport)) {
-    Start-Sleep -Seconds 2
-}
-
-$isListening = $false
-$wasKeyPressed = $false
-
-# Raw receive buffer: we drain bytes via $tcpClient.Available and split lines ourselves.
-$global:recvBuffer = New-Object System.Text.StringBuilder
-$readByteBuffer = New-Object 'byte[]' 4096
-
-# Remember our own console/terminal window so we never treat it as the paste target.
-$global:consoleHwnd = [Win32Input]::GetForegroundWindow()
-$global:targetHwnd = [IntPtr]::Zero
-
 function Send-HermesCommand($cmdName) {
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $json = "{`"version`":`"1.0`",`"type`":`"command`",`"command`":`"$cmdName`",`"timestamp`":$ts}"
-    if ($global:writer) {
-        $global:writer.WriteLine($json)
-    }
+    try { if ($global:writer) { $global:writer.WriteLine($json) } } catch {}
 }
 
-function Set-WindowsTextClipboard($textToCopy) {
-    try {
-        Set-Clipboard -Value $textToCopy
-    } catch {
-        try {
-            $textToCopy | clip.exe
-        } catch {
-            [System.Windows.Forms.Clipboard]::SetText($textToCopy)
-        }
-    }
-}
-
+# --- Window focus + paste ------------------------------------------------------
 function Get-WindowTitle($hWnd) {
-    if (-not $hWnd -or $hWnd -eq [IntPtr]::Zero) { return "<none>" }
+    if (-not $hWnd -or $hWnd -eq [IntPtr]::Zero) { return '<none>' }
     $sb = New-Object System.Text.StringBuilder 256
     [void][Win32Input]::GetWindowText($hWnd, $sb, $sb.Capacity)
     $t = $sb.ToString()
@@ -127,25 +207,27 @@ function Get-WindowTitle($hWnd) {
     return $t
 }
 
-function Set-ForceForeground($hWnd) {
-    # Reliably bring a window to the foreground despite the Windows 11 foreground lock.
-    # A background console process cannot normally SetForegroundWindow() another app's
-    # window; temporarily attaching our input queue to the current foreground thread and
-    # the target thread lifts that restriction, after which SetForegroundWindow succeeds.
-    if (-not $hWnd -or $hWnd -eq [IntPtr]::Zero) { return $false }
-
-    $SW_RESTORE = 9
-    if ([Win32Input]::IsIconic($hWnd)) {
-        [Win32Input]::ShowWindow($hWnd, $SW_RESTORE) | Out-Null
+function Set-WindowsTextClipboard($textToCopy) {
+    try { Set-Clipboard -Value $textToCopy }
+    catch {
+        try { $textToCopy | clip.exe }
+        catch { [System.Windows.Forms.Clipboard]::SetText($textToCopy) }
     }
+}
+
+function Set-ForceForeground($hWnd) {
+    # Defeat the Windows 11 foreground lock: attach our input queue to the current
+    # foreground thread and the target thread so SetForegroundWindow is honoured.
+    if (-not $hWnd -or $hWnd -eq [IntPtr]::Zero) { return $false }
+    $SW_RESTORE = 9
+    if ([Win32Input]::IsIconic($hWnd)) { [Win32Input]::ShowWindow($hWnd, $SW_RESTORE) | Out-Null }
 
     $foreWnd      = [Win32Input]::GetForegroundWindow()
     $foreThread   = [Win32Input]::GetWindowThreadProcessId($foreWnd, [IntPtr]::Zero)
     $targetThread = [Win32Input]::GetWindowThreadProcessId($hWnd, [IntPtr]::Zero)
     $curThread    = [Win32Input]::GetCurrentThreadId()
 
-    $attachedFore   = $false
-    $attachedTarget = $false
+    $attachedFore = $false; $attachedTarget = $false
     if ($foreThread -ne 0 -and $foreThread -ne $curThread) {
         $attachedFore = [Win32Input]::AttachThreadInput($curThread, $foreThread, $true)
     }
@@ -163,140 +245,142 @@ function Set-ForceForeground($hWnd) {
 }
 
 function Send-Win32Paste {
-    # If we captured the window that was focused when dictation started, bring it forward
-    # and paste there. Otherwise paste into whatever window currently has focus. We never
-    # force a specific app such as Notepad -- that would hijack text away from the window
-    # the user actually intended.
-    $target = $global:targetHwnd
-
+    # Focus the window captured when dictation started; otherwise paste into whatever
+    # window currently has focus. Never force a specific app such as Notepad.
+    $target = $script:targetHwnd
     if ($target -and $target -ne [IntPtr]::Zero) {
-        $title = Get-WindowTitle $target
         $focused = Set-ForceForeground $target
-        if ($focused) {
-            Write-Host "  [PASTE] Into captured window: $title" -ForegroundColor DarkCyan
-        } else {
-            Write-Host "  [PASTE] Could not focus '$title'; pasting into current foreground window instead." -ForegroundColor DarkYellow
-        }
+        if (-not $focused) { Write-Log "Could not focus '$(Get-WindowTitle $target)'; pasting into foreground." 'DarkYellow' }
         Start-Sleep -Milliseconds 120
-    } else {
-        $fgNow = [Win32Input]::GetForegroundWindow()
-        Write-Host "  [PASTE] Into current foreground window: $(Get-WindowTitle $fgNow)" -ForegroundColor DarkCyan
     }
-
-    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl DOWN
-    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
+    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl down
+    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V down
     Start-Sleep -Milliseconds 40
-    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V UP
-    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl UP
+    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V up
+    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl up
+}
+
+# --- Dictation control ---------------------------------------------------------
+function Start-Dictation {
+    if ($script:isListening) { return }
+    $fg = [Win32Input]::GetForegroundWindow()
+    if ($fg.ToInt64() -ne 0 -and $fg.ToInt64() -ne $script:consoleHwnd.ToInt64()) {
+        $script:targetHwnd = $fg
+        Write-Log "Target window: $(Get-WindowTitle $fg)" 'DarkCyan'
+    } else {
+        $script:targetHwnd = [IntPtr]::Zero
+    }
+    Set-ListeningState $true
+    Send-HermesCommand 'start_listening'
+    Write-Log 'Listening started.' 'Red'
+}
+
+function Stop-Dictation {
+    if (-not $script:isListening) { return }
+    Set-ListeningState $false
+    Send-HermesCommand 'stop_listening'
+    Write-Log 'Listening stopped; awaiting transcript.' 'Yellow'
 }
 
 function Process-HermesLine($line) {
     if (-not $line -or $line.Trim().Length -eq 0) { return }
     try {
         $msg = $line | ConvertFrom-Json
-        if ($msg.type -eq "partial") {
-            $ptext = $msg.text
-            Write-Host "  ... Partial: $ptext" -ForegroundColor DarkGray
-        } elseif ($msg.type -eq "final") {
-            $ftext = $msg.text
-            Write-Host ""
-            Write-Host "============================================================" -ForegroundColor Green
-            Write-Host "[FINAL TRANSCRIPT]: $ftext" -ForegroundColor Green
-            Write-Host "============================================================" -ForegroundColor Green
-            Write-Host ""
-            if ($ftext -and $ftext.Trim().Length -gt 0) {
-                Write-Host "[COPYING TO CLIPBOARD & PASTING VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
-                Set-WindowsTextClipboard $ftext
-                Start-Sleep -Milliseconds 100
-                Send-Win32Paste
+        switch ($msg.type) {
+            'partial' { Write-Log "  partial: $($msg.text)" 'DarkGray' }
+            'final' {
+                $ftext = $msg.text
+                Write-Log "Transcript: $ftext" 'Green'
+                if ($ftext -and $ftext.Trim().Length -gt 0) {
+                    # Append a trailing space so consecutive dictations stay separated.
+                    Set-WindowsTextClipboard ($ftext.TrimEnd() + ' ')
+                    Start-Sleep -Milliseconds 100
+                    Send-Win32Paste
+                }
             }
-        } elseif ($msg.type -eq "error") {
-            $errText = $msg.message
-            $errCode = $msg.code
-            Write-Host ""
-            Write-Host "[SPEECH ERROR]: $errText (Code: $errCode)" -ForegroundColor Red
-            Write-Host ""
-        } elseif ($msg.type -eq "heartbeat") {
-            Write-Host "[HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
+            'error'     { Write-Log "Speech error: $($msg.message) (Code: $($msg.code))" 'Red' }
+            'heartbeat' { }  # keep-alive; no action
         }
-    } catch {
-        Write-Host "  ... TCP Payload: $line" -ForegroundColor Gray
-    }
+    } catch { }
 }
 
-# Main Event Loop
-while ($true) {
-    $stateF12 = [Win32Input]::GetAsyncKeyState($VK_F12) -band 0x8000
-    $stateSearch = [Win32Input]::GetAsyncKeyState($VK_SEARCH) -band 0x8000
-    $stateCalc = [Win32Input]::GetAsyncKeyState($VK_CALCULATOR) -band 0x8000
+# --- Startup -------------------------------------------------------------------
+Write-Log '============================================================' 'Cyan'
+Write-Log 'Project Hermes - Windows Companion (system tray)' 'Cyan'
+Write-Log "Mode: $script:Mode   Hotkey: F12 / Search / Calculator" 'Cyan'
+Write-Log 'Right-click the tray icon to switch mode or exit.' 'Gray'
+Write-Log '============================================================' 'Cyan'
 
-    $isKeyPressed = ($stateF12 -ne 0) -or ($stateSearch -ne 0) -or ($stateCalc -ne 0)
+while (-not (Connect-Transport)) {
+    if ($script:ShouldExit) { break }
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Seconds 2
+}
 
-    if ($isKeyPressed -and -not $wasKeyPressed) {
-        if (-not $isListening) {
-            $isListening = $true
-            # Capture the window the user is currently working in so we can paste back
-            # into it later. Ignore our own console so we do not paste into this terminal.
-            # Compare handle values as Int64 -- IntPtr -eq/-ne is unreliable in PowerShell.
-            $fg = [Win32Input]::GetForegroundWindow()
-            Write-Host ""
-            if ($fg.ToInt64() -ne 0 -and $fg.ToInt64() -ne $global:consoleHwnd.ToInt64()) {
-                $global:targetHwnd = $fg
-                Write-Host "[TARGET] Captured active window: $(Get-WindowTitle $fg)" -ForegroundColor DarkCyan
-            } else {
-                $global:targetHwnd = [IntPtr]::Zero
-                Write-Host "[TARGET] Foreground is this daemon console; will paste into whatever window is focused when the transcript arrives." -ForegroundColor DarkYellow
-            }
-            Write-Host "[SPEECH STARTED] Speak into phone now... Press [F12] when done." -ForegroundColor Red
-            Send-HermesCommand "start_listening"
-        } else {
-            $isListening = $false
-            Write-Host ""
-            Write-Host "[SPEECH STOPPED] Processing transcript on Pixel 8 NPU..." -ForegroundColor Yellow
-            Send-HermesCommand "stop_listening"
+$wasKeyPressed = $false
+
+# --- Main event loop -----------------------------------------------------------
+while (-not $script:ShouldExit) {
+    [System.Windows.Forms.Application]::DoEvents()   # service tray menu events
+
+    # Hotkey edge detection
+    $isKeyPressed = $false
+    foreach ($vk in $VK_LIST) {
+        if (([Win32Input]::GetAsyncKeyState([int]$vk) -band 0x8000) -ne 0) { $isKeyPressed = $true; break }
+    }
+
+    if ($script:Mode -eq 'PushToTalk') {
+        if ($isKeyPressed -and -not $wasKeyPressed) { Start-Dictation }
+        elseif (-not $isKeyPressed -and $wasKeyPressed) { Stop-Dictation }
+    } else { # Toggle
+        if ($isKeyPressed -and -not $wasKeyPressed) {
+            if (-not $script:isListening) { Start-Dictation } else { Stop-Dictation }
         }
     }
     $wasKeyPressed = $isKeyPressed
 
-    # Non-blocking socket drain: pull every available byte off the socket, then process
-    # each complete newline-terminated line. Any trailing partial line is kept for the
-    # next tick. This avoids the StreamReader/DataAvailable pitfall where read-ahead
-    # buffering strands a complete 'final' line so the paste never fires. Socket errors
-    # (the Android server routinely closes/reopens the connection) trigger a reconnect.
+    # Non-blocking socket drain with disconnect detection + reconnect.
     try {
-        # Poll detects a graceful remote close: readable with zero bytes available.
         $sock = $global:tcpClient.Client
         if ($sock.Poll(0, [System.Net.Sockets.SelectMode]::SelectRead) -and $global:tcpClient.Available -eq 0) {
-            throw "Remote server closed the connection."
+            throw 'Remote server closed the connection.'
         }
-
         while ($global:tcpClient.Available -gt 0) {
             $count = $global:stream.Read($readByteBuffer, 0, $readByteBuffer.Length)
-            if ($count -le 0) { throw "Remote server closed the connection." }
+            if ($count -le 0) { throw 'Remote server closed the connection.' }
             [void]$global:recvBuffer.Append([System.Text.Encoding]::UTF8.GetString($readByteBuffer, 0, $count))
         }
-
         $buffered = $global:recvBuffer.ToString()
         $nl = $buffered.IndexOf("`n")
         while ($nl -ge 0) {
-            $line = $buffered.Substring(0, $nl).TrimEnd("`r")
+            $lineText = $buffered.Substring(0, $nl).TrimEnd("`r")
             $buffered = $buffered.Substring($nl + 1)
-            Process-HermesLine $line
+            Process-HermesLine $lineText
             $nl = $buffered.IndexOf("`n")
         }
         [void]$global:recvBuffer.Clear()
         [void]$global:recvBuffer.Append($buffered)
     } catch {
-        Write-Host ""
-        Write-Host "[DISCONNECTED] $($_.Exception.Message) Reconnecting..." -ForegroundColor Red
+        Write-Log "Disconnected: $($_.Exception.Message) Reconnecting..." 'Red'
         try { if ($global:writer) { $global:writer.Dispose() } } catch {}
         try { if ($global:stream) { $global:stream.Dispose() } } catch {}
         try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}
         $global:writer = $null
         [void]$global:recvBuffer.Clear()
-        $isListening = $false
-        while (-not (Connect-Transport)) { Start-Sleep -Seconds 2 }
+        Set-ListeningState $false
+        while (-not (Connect-Transport)) {
+            if ($script:ShouldExit) { break }
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Seconds 2
+        }
     }
 
-    Start-Sleep -Milliseconds 50
+    Start-Sleep -Milliseconds 40
 }
+
+# --- Cleanup -------------------------------------------------------------------
+Write-Log 'Shutting down Hermes companion.' 'Gray'
+try { $script:notify.Visible = $false; $script:notify.Dispose() } catch {}
+try { if ($global:writer) { $global:writer.Dispose() } } catch {}
+try { if ($global:stream) { $global:stream.Dispose() } } catch {}
+try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}

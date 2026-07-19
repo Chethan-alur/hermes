@@ -90,9 +90,19 @@ tasks:
       - echo "🛑 Hermes Windows companion daemon stopped."
 
   windows:ps:
-    desc: Run native Windows PowerShell global hotkey daemon (F12 / Search / Calculator key)
+    desc: Run the Windows companion daemon in the foreground (visible console, tray icon, for debugging)
     cmds:
       - powershell.exe -ExecutionPolicy Bypass -File windows/hermes_hotkey.ps1
+
+  windows:install:
+    desc: Install the Windows companion (copies to %LOCALAPPDATA%, auto-starts at logon, runs in tray)
+    cmds:
+      - powershell.exe -ExecutionPolicy Bypass -File windows/install_hermes.ps1
+
+  windows:uninstall:
+    desc: Uninstall the Windows companion (stops the tray daemon, removes shortcuts and files)
+    cmds:
+      - powershell.exe -ExecutionPolicy Bypass -File windows/uninstall_hermes.ps1
 
   test:
     desc: Run protocol schema validation and unit tests
