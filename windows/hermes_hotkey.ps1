@@ -1,6 +1,7 @@
 # Project Hermes - Native Windows Companion (PowerShell Daemon)
 # ------------------------------------------------------------------------------
-# Global hotkey dictation bridge. Listens for F12 / Dell Search / Calculator keys,
+# Global hotkey dictation bridge. Listens for a configurable global hotkey (default:
+# Right Ctrl, VK 163 -- a modifier, so holding it never triggers app actions),
 # streams speech commands to the Android companion over TCP, and pastes the returned
 # transcript into the active window. Runs from the system tray and supports two modes:
 #
@@ -74,7 +75,7 @@ function Write-Log {
 
 # --- Configuration -------------------------------------------------------------
 function Load-Config {
-    $cfg = [ordered]@{ mode = 'Toggle'; host = '127.0.0.1'; port = 9999; hotkeys = @(123, 170, 183) }
+    $cfg = [ordered]@{ mode = 'Toggle'; host = '127.0.0.1'; port = 9999; hotkeys = @(163) }  # 163 = Right Ctrl
     if (Test-Path $global:ConfigPath) {
         try {
             $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
@@ -307,7 +308,7 @@ function Process-HermesLine($line) {
 # --- Startup -------------------------------------------------------------------
 Write-Log '============================================================' 'Cyan'
 Write-Log 'Project Hermes - Windows Companion (system tray)' 'Cyan'
-Write-Log "Mode: $script:Mode   Hotkey: F12 / Search / Calculator" 'Cyan'
+Write-Log "Mode: $script:Mode   Hotkey VK: $($VK_LIST -join ', ') (default 163 = Right Ctrl)" 'Cyan'
 Write-Log 'Right-click the tray icon to switch mode or exit.' 'Gray'
 Write-Log '============================================================' 'Cyan'
 

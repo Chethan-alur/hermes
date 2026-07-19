@@ -2,5 +2,5 @@
   "mode": "Toggle",
   "host": "127.0.0.1",
   "port": 9999,
-  "hotkeys": [123, 170, 183]
+  "hotkeys": [163]
 }
