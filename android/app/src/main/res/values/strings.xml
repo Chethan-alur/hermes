@@ -15,4 +15,6 @@
 
     <string name="label_console">Event Console</string>
     <string name="btn_clear">Clear</string>
+
+    <string name="label_online_mode">Online mode (higher accuracy, not private)</string>
 </resources>

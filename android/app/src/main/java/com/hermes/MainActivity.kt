@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.hermes.speech.AndroidSpeechEngine
 import com.hermes.speech.SpeechEngine
 import com.hermes.speech.SpeechEvent
@@ -48,6 +49,15 @@ class MainActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.btn_start_recognition).setOnClickListener { startRecognition() }
         findViewById<MaterialButton>(R.id.btn_stop_recognition).setOnClickListener { stopRecognition() }
         findViewById<MaterialButton>(R.id.btn_clear_log).setOnClickListener { clearLog() }
+
+        // Offline (private) vs online (higher accuracy) recognition toggle.
+        val prefs = getSharedPreferences(AndroidSpeechEngine.PREFS, MODE_PRIVATE)
+        val switchOnline = findViewById<MaterialSwitch>(R.id.switch_online)
+        switchOnline.isChecked = !prefs.getBoolean(AndroidSpeechEngine.KEY_PREFER_OFFLINE, true)
+        switchOnline.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(AndroidSpeechEngine.KEY_PREFER_OFFLINE, !isChecked).apply()
+            logEvent(if (isChecked) "Recognition mode: ONLINE (higher accuracy)" else "Recognition mode: OFFLINE (private)")
+        }
 
         checkPermissions()
         speechEngine = AndroidSpeechEngine(this)

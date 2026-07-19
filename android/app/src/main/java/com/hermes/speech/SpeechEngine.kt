@@ -9,7 +9,6 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
-import java.util.Locale
 
 sealed class SpeechEvent {
     object ListeningStarted : SpeechEvent()
@@ -59,6 +58,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         // Tolerate long pauses within a single segment so we restart (and drop audio) as
         // rarely as possible. Note: Google's recognizer may ignore these hints.
         private const val SILENCE_MILLIS = 10000
+        // Recognition language (BCP-47). Indian English by default.
+        private const val LANGUAGE = "en-IN"
+        // Runtime offline/online toggle, shared with the UI via SharedPreferences.
+        const val PREFS = "hermes_prefs"
+        const val KEY_PREFER_OFFLINE = "prefer_offline"
     }
 
     init {
@@ -111,12 +115,19 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         if (!sessionActive) return
         segmentRunning = true
         lastPartial = ""
-        Log.i(TAG, "Segment start")
+        val preferOffline = context
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_PREFER_OFFLINE, true)
+        Log.i(TAG, "Segment start (lang=$LANGUAGE offline=$preferOffline)")
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, LANGUAGE)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, LANGUAGE)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true) // on-device (Tensor G3)
+            // Add unspoken punctuation and capitalization, like Gboard voice typing.
+            putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY)
+            // Offline (private, on-device) by default; the UI switch can request online.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
         }
