@@ -60,13 +60,25 @@ function Send-HermesCommand($cmdName) {
     $writer.WriteLine($json)
 }
 
+function Set-WindowsTextClipboard($textToCopy) {
+    try {
+        Set-Clipboard -Value $textToCopy
+    } catch {
+        try {
+            $textToCopy | clip.exe
+        } catch {
+            [System.Windows.Forms.Clipboard]::SetText($textToCopy)
+        }
+    }
+}
+
 function Send-Win32Paste {
     # Send Ctrl (0x11) + V (0x56) Key Down and Key Up via Win32 keybd_event
     [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl DOWN
     [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
-    Start-Sleep -Milliseconds 20
+    Start-Sleep -Milliseconds 30
     [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V UP
-    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl UP
+    [Win32Input]::keybd_event(011, 0, 2, [UIntPtr]::Zero) # Ctrl UP
 }
 
 # Main Event Loop
@@ -98,8 +110,8 @@ while ($true) {
                 } elseif ($msg.type -eq "final") {
                     Write-Host "`n[FINAL SPEECH RESULT]: `"$($msg.text)`"`n" -ForegroundColor Green
                     if ($msg.text -and $msg.text.Trim().Length -gt 0) {
-                        Write-Host "[PASTING TEXT VIA WIN32 KEYBD_EVENT]: '$($msg.text)'" -ForegroundColor Cyan
-                        Set-Clipboard -Value $msg.text
+                        Write-Host "[COPYING TO CLIPBOARD & PASTING VIA Ctrl+V]: '$($msg.text)'" -ForegroundColor Cyan
+                        Set-WindowsTextClipboard $msg.text
                         Start-Sleep -Milliseconds 100
                         Send-Win32Paste
                     }
