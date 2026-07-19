@@ -1,6 +1,6 @@
 # Project Hermes - Native Windows PowerShell Global Hotkey Daemon
 # Listens globally for F12 (VK 123), Dell Search Key (VK 170), and Calculator Key (VK 183).
-# Sends protocol commands over TCP port 9999 to Android and injects text into active window.
+# Sends protocol commands over TCP port 9999 to Android and injects text into active window via Clipboard Paste (Ctrl+V).
 
 Add-Type -TypeDefinition @"
 using System;
@@ -87,11 +87,14 @@ while ($true) {
                 } elseif ($msg.type -eq "final") {
                     Write-Host "`n[FINAL SPEECH RESULT]: `"$($msg.text)`"`n" -ForegroundColor Green
                     if ($msg.text -and $msg.text.Trim().Length -gt 0) {
-                        Write-Host "[INJECTING TEXT INTO ACTIVE WINDOW]: '$($msg.text)'" -ForegroundColor Cyan
+                        Write-Host "[PASTING TEXT INTO ACTIVE WINDOW via Ctrl+V]: '$($msg.text)'" -ForegroundColor Cyan
                         try {
-                            $wsh.SendKeys($msg.text)
+                            Set-Clipboard -Value $msg.text
+                            Start-Sleep -Milliseconds 100
+                            $wsh.SendKeys('^v')
                         } catch {
-                            [System.Windows.Forms.SendKeys]::SendWait($msg.text)
+                            [System.Windows.Forms.Clipboard]::SetText($msg.text)
+                            [System.Windows.Forms.SendKeys]::SendWait('^v')
                         }
                     }
                 } elseif ($msg.type -eq "heartbeat") {
