@@ -15,7 +15,13 @@ Run the RTM alignment checker script:
 python3 .agents/skills/rtm-manager/scripts/check_rtm_alignment.py
 ```
 
-### Purpose
-- Lists all registered `REQ-FUNC-xxx` and `REQ-NFR-xxx` items.
-- Verifies requirement ID formatting and test mapping.
-- Ensures new features are properly logged before implementation.
+### Options
+- List registered requirements:
+  ```bash
+  python3 .agents/skills/rtm-manager/scripts/check_rtm_alignment.py
+  ```
+- Automatically assign & register a new requirement:
+  ```bash
+  python3 .agents/skills/rtm-manager/scripts/check_rtm_alignment.py --add "Support Whisper.cpp engine" --type FUNC --subsystem "android/speech"
+  ```
+
