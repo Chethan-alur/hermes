@@ -46,9 +46,20 @@ def run_unit_tests(repo_root: Path) -> bool:
         return False
 
 
+def run_e2e_tests(repo_root: Path) -> bool:
+    print("\n🧪 [SUITE 3/3] Running Automated End-to-End (E2E) Live Device Test Suite...")
+    e2e_script = repo_root / "tests" / "e2e" / "test_end_to_end.py"
+    if not e2e_script.exists():
+        print(f"ℹ️ E2E script missing: {e2e_script}")
+        return True
+    
+    res = subprocess.run([sys.executable, str(e2e_script)])
+    return res.returncode == 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hermes Test Runner")
-    parser.add_argument("--suite", choices=["protocol", "unit", "all"], default="all", help="Test suite to run")
+    parser.add_argument("--suite", choices=["protocol", "unit", "e2e", "all"], default="all", help="Test suite to run")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[4]
@@ -59,6 +70,9 @@ def main():
 
     if args.suite in ["unit", "all"]:
         success = run_unit_tests(repo_root) and success
+
+    if args.suite in ["e2e", "all"]:
+        success = run_e2e_tests(repo_root) and success
 
     print("\n" + "=" * 60)
     if success:

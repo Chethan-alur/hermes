@@ -99,6 +99,11 @@ tasks:
     cmds:
       - python3 .agents/skills/test-runner/scripts/run_tests.py
 
+  test:e2e:
+    desc: Run automated End-to-End integration test suite against Android phone over port 9999
+    cmds:
+      - python3 tests/e2e/test_end_to_end.py
+
   test:mode:
     desc: Run interactive Test Mode simulator and payload playback (REQ-FUNC-011)
     cmds:
