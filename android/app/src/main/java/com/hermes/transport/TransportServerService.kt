@@ -57,17 +57,24 @@ class TransportServerService : Service() {
     private fun startServerThread() {
         isRunning = true
         Thread {
-            try {
-                serverSocket = ServerSocket(PORT)
-                Log.i(TAG, "ServerSocket listening on port $PORT...")
+            while (isRunning) {
+                try {
+                    if (serverSocket == null || serverSocket?.isClosed == true) {
+                        serverSocket = ServerSocket(PORT).apply {
+                            reuseAddress = true
+                        }
+                        Log.i(TAG, "ServerSocket listening on port $PORT...")
+                    }
 
-                while (isRunning) {
                     val socket = serverSocket?.accept() ?: break
                     Log.i(TAG, "Client connected from ${socket.inetAddress}")
                     handleClientConnection(socket)
+                } catch (e: Exception) {
+                    if (isRunning) {
+                        Log.e(TAG, "Server socket exception: ${e.message}. Retrying accept in 1s...")
+                        try { Thread.sleep(1000) } catch (_: Exception) {}
+                    }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Server socket exception: ${e.message}")
             }
         }.start()
     }
