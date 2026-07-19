@@ -1,6 +1,6 @@
 # Project Hermes - Native Windows PowerShell Global Hotkey Daemon
 # Listens globally for F12 (VK 123), Dell Search Key (VK 170), and Calculator Key (VK 183).
-# Toggle Mode: Press key once to START listening -> Speak -> Press key again to STOP listening & paste text into active window.
+# Toggle Mode with Key Edge Detection: Press key ONCE to START -> Speak -> Press key ONCE again to STOP & Paste.
 
 Add-Type -TypeDefinition @"
 using System;
@@ -26,9 +26,8 @@ $VK_CALCULATOR = 183
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "TOGGLE MODE: Press [F12] (or Dell Search / Calc) to START listening." -ForegroundColor Yellow
-Write-Host "Press [F12] again to STOP listening & paste text into active window." -ForegroundColor Yellow
-Write-Host "Press Ctrl+C to exit.`n" -ForegroundColor Gray
+Write-Host "TOGGLE MODE: Press [F12] (or Search/Calc key) once to START." -ForegroundColor Yellow
+Write-Host "Press [F12] key once again to STOP and paste into active window.`n" -ForegroundColor Yellow
 
 $tcpClient = $null
 $stream = $null
@@ -50,7 +49,7 @@ while (-not (Connect-Transport)) {
 }
 
 $isListening = $false
-$lastKeyPressTime = 0
+$wasKeyPressed = $false
 $reader = New-Object System.IO.StreamReader($global:stream)
 $writer = New-Object System.IO.StreamWriter($global:stream)
 $writer.AutoFlush = $true
@@ -88,21 +87,20 @@ while ($true) {
     $stateCalc = [Win32Input]::GetAsyncKeyState($VK_CALCULATOR) -band 0x8000
 
     $isKeyPressed = ($stateF12 -ne 0) -or ($stateSearch -ne 0) -or ($stateCalc -ne 0)
-    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
-    # Debounce key press (must be at least 300ms since last key trigger)
-    if ($isKeyPressed -and (($nowMs - $lastKeyPressTime) -gt 300)) {
-        $lastKeyPressTime = $nowMs
+    # Rising Edge Trigger: Fires ONCE when key transitions from NOT pressed to PRESSED
+    if ($isKeyPressed -and -not $wasKeyPressed) {
         if (-not $isListening) {
             $isListening = $true
-            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
+            Write-Host "`n[KEY PRESS] F12 / Search Key Pressed -> 🔴 SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
             Send-HermesCommand "start_listening"
         } else {
             $isListening = $false
-            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
+            Write-Host "`n[KEY PRESS] F12 / Search Key Pressed -> ⏹️ SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
             Send-HermesCommand "stop_listening"
         }
     }
+    $wasKeyPressed = $isKeyPressed
 
     # Drain all pending JSON lines from StreamReader buffer or network stream
     while ($global:stream.DataAvailable -or ($reader.Peek() -ge 0)) {
