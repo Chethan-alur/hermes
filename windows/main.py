@@ -2,7 +2,7 @@
 """
 Windows Companion Daemon - Project Hermes
 Coordinates Global Hotkey, TCP Transport, and Text Injection into active window.
-Supports background daemon mode and WSL/Linux terminal mode.
+Supports background daemon mode and instant single-key Push-To-Talk for WSL/Linux terminal.
 """
 
 import sys
@@ -23,6 +23,24 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s"
 )
 logger = logging.getLogger("HermesWindowsMain")
+
+
+def read_single_key():
+    """Reads a single keypress instantly without requiring [Enter] (Linux/WSL)."""
+    try:
+        import tty
+        import termios
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
+    except Exception:
+        # Fallback to standard input if tty/termios unavailable
+        return sys.stdin.read(1)
 
 
 class HermesWindowsDaemon:
@@ -59,20 +77,23 @@ class HermesWindowsDaemon:
             except (KeyboardInterrupt, SystemExit):
                 self.stop()
         else:
-            logger.info("Running in Terminal Interactive Mode (pynput missing/WSL environment).")
+            logger.info("Running in Instant Single-Key Terminal Mode (WSL / Linux).")
             print("\n" + "=" * 60)
             print("🎙️ Project Hermes Terminal Controller (WSL / Linux Mode)")
             print("=" * 60)
-            print("Type 's' and press [Enter] to START/STOP Push-To-Talk.")
-            print("Type 'q' and press [Enter] to quit.\n")
+            print("Press [SPACEBAR] to START/STOP Push-To-Talk instantly!")
+            print("Press [q] to quit.\n")
 
             try:
                 while self.running:
-                    user_input = input("Type 's' [Enter] to toggle Push-To-Talk (or 'q' to quit) > ").strip().lower()
-                    if user_input in ["q", "quit", "exit"]:
+                    print("👉 Press [SPACEBAR] to toggle dictation (or 'q' to quit)...", end="", flush=True)
+                    ch = read_single_key()
+                    print() # newline after keypress
+                    
+                    if ch.lower() in ["q", "\x03"]: # 'q' or Ctrl+C
                         self.stop()
                         break
-                    elif user_input in ["s", "speak", "talk", ""]:
+                    elif ch in [" ", "s", "r", "\r", "\n"]:
                         self.toggle_push_to_talk()
             except (KeyboardInterrupt, EOFError):
                 logger.info("Shutting down daemon...")
