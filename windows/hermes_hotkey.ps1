@@ -27,7 +27,9 @@ Write-Host "============================================================" -Foreg
 Write-Host "Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "TOGGLE MODE: Press [F12] (or Search/Calc key) once to START." -ForegroundColor Yellow
-Write-Host "Press [F12] key once again to STOP and paste into active window.`n" -ForegroundColor Yellow
+Write-Host "Press [F12] key once again to STOP and paste into active window." -ForegroundColor Yellow
+Write-Host "Press Ctrl+C to exit." -ForegroundColor Gray
+Write-Host ""
 
 $tcpClient = $null
 $stream = $null
@@ -73,11 +75,11 @@ function Set-WindowsTextClipboard($textToCopy) {
 }
 
 function Send-Win32Paste {
-    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl DOWN
-    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
+    [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 30
-    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V UP
-    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # Ctrl UP
+    [Win32Input]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero)
+    [Win32Input]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
 # Main Event Loop
@@ -88,21 +90,21 @@ while ($true) {
 
     $isKeyPressed = ($stateF12 -ne 0) -or ($stateSearch -ne 0) -or ($stateCalc -ne 0)
 
-    # Rising Edge Trigger: Fires ONCE when key transitions from NOT pressed to PRESSED
     if ($isKeyPressed -and -not $wasKeyPressed) {
         if (-not $isListening) {
             $isListening = $true
-            Write-Host "`n[KEY PRESS] F12 / Search Key Pressed -> 🔴 SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "[KEY PRESS] F12 / Search Key Pressed -> SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
             Send-HermesCommand "start_listening"
         } else {
             $isListening = $false
-            Write-Host "`n[KEY PRESS] F12 / Search Key Pressed -> ⏹️ SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "[KEY PRESS] F12 / Search Key Pressed -> SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
             Send-HermesCommand "stop_listening"
         }
     }
     $wasKeyPressed = $isKeyPressed
 
-    # Drain all pending JSON lines from StreamReader buffer or network stream
     while ($global:stream.DataAvailable -or ($reader.Peek() -ge 0)) {
         $line = $reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
@@ -113,7 +115,9 @@ while ($true) {
                     Write-Host "  ... Partial: $ptext" -ForegroundColor DarkGray
                 } elseif ($msg.type -eq "final") {
                     $ftext = $msg.text
-                    Write-Host "`n[FINAL SPEECH RESULT]: $ftext`n" -ForegroundColor Green
+                    Write-Host ""
+                    Write-Host "[FINAL SPEECH RESULT]: $ftext" -ForegroundColor Green
+                    Write-Host ""
                     if ($ftext -and $ftext.Trim().Length -gt 0) {
                         Write-Host "[PASTING TEXT VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
                         Set-WindowsTextClipboard $ftext
