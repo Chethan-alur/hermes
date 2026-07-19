@@ -97,6 +97,8 @@ class TransportServerService : Service() {
         }
     }
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     private fun parseIncomingCommand(jsonStr: String) {
         try {
             Log.d(TAG, "📥 [TCP RECV RAW]: $jsonStr")
@@ -107,12 +109,16 @@ class TransportServerService : Service() {
             if (type == "command") {
                 when (command) {
                     "start_listening" -> {
-                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'start_listening' -> Triggering Speech Engine listening...")
-                        speechEngine?.startListening { event -> handleSpeechEvent(event) }
+                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'start_listening' -> Dispatching to Main UI thread...")
+                        mainHandler.post {
+                            speechEngine?.startListening { event -> handleSpeechEvent(event) }
+                        }
                     }
                     "stop_listening" -> {
-                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'stop_listening' -> Stopping Speech Engine recognition...")
-                        speechEngine?.stopListening()
+                        Log.i(TAG, "🔑 [HOTKEY COMMAND RECV]: 'stop_listening' -> Dispatching to Main UI thread...")
+                        mainHandler.post {
+                            speechEngine?.stopListening()
+                        }
                     }
                     "ping" -> {
                         Log.d(TAG, "💓 [HEARTBEAT RECV]: Responding with ready heartbeat...")
