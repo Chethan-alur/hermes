@@ -3,6 +3,7 @@
 Keyboard Event Diagnostic Tool - Project Hermes
 Detects and displays exact Key Down and Key Up events, scan codes, virtual keycodes (VK),
 and special keys like Calculator (VK_LAUNCH_APP2 / 183), Mail, Media keys, F1-F12, etc.
+Supports --suppress flag to intercept and block default Windows OS actions (e.g. calc.exe).
 """
 
 import sys
@@ -48,7 +49,7 @@ def format_key_event(key):
     return key_name, vk_info
 
 
-def run_windows_native_detector():
+def run_windows_native_detector(suppress_events: bool = False):
     try:
         from pynput import keyboard
     except ImportError:
@@ -59,8 +60,10 @@ def run_windows_native_detector():
     press_times = {}
 
     print("=" * 75)
-    print("🔑 Windows Global Keyboard Hook Detector Active (pynput)")
+    print(f"🔑 Windows Global Keyboard Hook Detector Active (pynput, suppress={suppress_events})")
     print("=" * 75)
+    if suppress_events:
+        print("🛡️ SUPPRESSION ENABLED: Intercepting & blocking key events from Windows OS (e.g. calc.exe won't open)!")
     print("Press ANY key (Calculator, Media keys, Right Ctrl, F1-F12, Space) to test.")
     print("Press [Esc] or Ctrl+C to exit.\n")
 
@@ -80,7 +83,7 @@ def run_windows_native_detector():
             print("\n[Esc] pressed. Exiting keyboard detector.")
             return False
 
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+    with keyboard.Listener(on_press=on_press, on_release=on_release, suppress=suppress_events) as listener:
         listener.join()
     return True
 
@@ -114,8 +117,9 @@ def run_terminal_key_detector():
 
 
 def main():
+    suppress_flag = "--suppress" in sys.argv or "-s" in sys.argv
     print("\n🔍 Hermes Keyboard Event Inspector\n")
-    success = run_windows_native_detector()
+    success = run_windows_native_detector(suppress_events=suppress_flag)
     if not success:
         run_terminal_key_detector()
 

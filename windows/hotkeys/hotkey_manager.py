@@ -14,9 +14,10 @@ class HotkeyManager:
     Global hotkey manager listening for Push-To-Talk (Right Ctrl hold).
     Emits JSON command payloads on keydown and keyup events.
     """
-    def __init__(self, on_command_callback, hotkey_name: str = "ctrl_r"):
+    def __init__(self, on_command_callback, hotkey_name: str = "ctrl_r", suppress: bool = False):
         self.on_command = on_command_callback
         self.hotkey_name = hotkey_name
+        self.suppress = suppress
         self.is_pressed = False
         self.listener = None
 
@@ -25,10 +26,11 @@ class HotkeyManager:
             logger.warning("pynput not available; HotkeyManager running in manual/mock mode.")
             return
 
-        logger.info(f"Starting global hotkey listener for key: {self.hotkey_name}")
+        logger.info(f"Starting global hotkey listener for key: {self.hotkey_name} (suppress={self.suppress})")
         self.listener = keyboard.Listener(
             on_press=self._on_press,
-            on_release=self._on_release
+            on_release=self._on_release,
+            suppress=self.suppress
         )
         self.listener.start()
 
