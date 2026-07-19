@@ -95,11 +95,11 @@ while ($true) {
         $lastKeyPressTime = $nowMs
         if (-not $isListening) {
             $isListening = $true
-            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> 🔴 SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
+            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> SPEECH RECOGNITION STARTED. Speak into phone!" -ForegroundColor Red
             Send-HermesCommand "start_listening"
         } else {
             $isListening = $false
-            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> ⏹️ SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
+            Write-Host "`n[TOGGLE] F12 / Search Key Pressed -> SPEECH RECOGNITION STOPPED. Processing text..." -ForegroundColor Yellow
             Send-HermesCommand "stop_listening"
         }
     }
@@ -111,12 +111,14 @@ while ($true) {
             try {
                 $msg = $line | ConvertFrom-Json
                 if ($msg.type -eq "partial") {
-                    Write-Host "  ... Partial: `"$($msg.text)`"" -ForegroundColor DarkGray
+                    $ptext = $msg.text
+                    Write-Host "  ... Partial: $ptext" -ForegroundColor DarkGray
                 } elseif ($msg.type -eq "final") {
-                    Write-Host "`n[FINAL SPEECH RESULT]: `"$($msg.text)`"`n" -ForegroundColor Green
-                    if ($msg.text -and $msg.text.Trim().Length -gt 0) {
-                        Write-Host "[PASTING TEXT VIA Ctrl+V]: '$($msg.text)'" -ForegroundColor Cyan
-                        Set-WindowsTextClipboard $msg.text
+                    $ftext = $msg.text
+                    Write-Host "`n[FINAL SPEECH RESULT]: $ftext`n" -ForegroundColor Green
+                    if ($ftext -and $ftext.Trim().Length -gt 0) {
+                        Write-Host "[PASTING TEXT VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
+                        Set-WindowsTextClipboard $ftext
                         Start-Sleep -Milliseconds 100
                         Send-Win32Paste
                     }

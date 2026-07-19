@@ -106,6 +106,40 @@ class TestHermesEndToEnd(unittest.TestCase):
         self.sock.sendall((json.dumps(stop_payload) + "\n").encode("utf-8"))
         print("  ✅ [E2E STEP 3b] 'stop_listening' Command Dispatched to Android.")
 
+    def test_04_simulate_speech_stream(self):
+        """Test sending 'simulate_speech' command and receiving partial and final speech result streams."""
+        # Read initial connection heartbeat
+        self.read_json_line(timeout=3.0)
+
+        # Send simulate_speech
+        sim_payload = {
+            "version": "1.0",
+            "type": "command",
+            "command": "simulate_speech",
+            "mock_text": "Project Hermes automated speech synthesis end to end test",
+            "timestamp": int(time.time() * 1000)
+        }
+        self.sock.sendall((json.dumps(sim_payload) + "\n").encode("utf-8"))
+
+        partial_found = False
+        final_found = False
+        start_t = time.time()
+
+        while (time.time() - start_t) < 5.0 and not final_found:
+            msg = self.read_json_line(timeout=3.0)
+            mtype = msg.get("type")
+            if mtype == "partial":
+                partial_found = True
+                self.assertIn("Project Hermes", msg.get("text", ""))
+                print(f"  ✅ [E2E STEP 4a] Received Partial Result Stream: '{msg.get('text')}'")
+            elif mtype == "final":
+                final_found = True
+                self.assertEqual(msg.get("text"), "Project Hermes automated speech synthesis end to end test")
+                print(f"  ✅ [E2E STEP 4b] Received Final Result Stream: '{msg.get('text')}' (Conf: {msg.get('confidence')})")
+
+        self.assertTrue(partial_found, "Failed to receive partial speech stream.")
+        self.assertTrue(final_found, "Failed to receive final speech result.")
+
 
 if __name__ == "__main__":
     print("=" * 65)
