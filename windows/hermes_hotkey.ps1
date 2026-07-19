@@ -21,7 +21,7 @@ $VK_SEARCH = 170
 $VK_CALCULATOR = 183
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
+Write-Host "🎙️ Project Hermes Native Windows Companion (PowerShell Daemon)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Press & Hold [F12] (or Dell Search Key / Calculator Key) to Dictate." -ForegroundColor Yellow
 Write-Host "Release key when finished speaking." -ForegroundColor Yellow
@@ -34,10 +34,10 @@ function Connect-Transport {
     try {
         $global:tcpClient = New-Object System.Net.Sockets.TcpClient($HOST_IP, $PORT)
         $global:stream = $global:tcpClient.GetStream()
-        Write-Host "Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
+        Write-Host "✅ Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
         return $true
     } catch {
-        Write-Host "Connecting to Android transport server at $HOST_IP`:$PORT failed. Retrying..." -ForegroundColor Red
+        Write-Host "⚠️ Connecting to Android transport server at $HOST_IP`:$PORT failed. Retrying..." -ForegroundColor Red
         return $false
     }
 }
@@ -67,35 +67,37 @@ while ($true) {
 
     if ($isKeyPressed -and -not $isListening) {
         $isListening = $true
-        Write-Host "`n[HOTKEY DOWN] F12 / Search Key Pressed! Speech Recognition STARTED." -ForegroundColor Red
+        Write-Host "`n🔴 [HOTKEY DOWN] F12 / Search Key Pressed! Speech Recognition STARTED." -ForegroundColor Red
         Send-HermesCommand "start_listening"
     } elseif (-not $isKeyPressed -and $isListening) {
         $isListening = $false
-        Write-Host "`n[HOTKEY UP] F12 / Search Key Released! Speech Recognition STOPPED." -ForegroundColor Yellow
+        Write-Host "`n⏹️ [HOTKEY UP] F12 / Search Key Released! Speech Recognition STOPPED." -ForegroundColor Yellow
         Send-HermesCommand "stop_listening"
     }
 
     if ($global:stream.DataAvailable) {
         $line = $reader.ReadLine()
-        if ($line) {
-            if ($line.Contains('"type":"partial"') -or $line.Contains('"type": "partial"')) {
-                Write-Host "  ... Partial result received: $line" -ForegroundColor DarkGray
-            } elseif ($line.Contains('"type":"final"') -or $line.Contains('"type": "final"')) {
-                Write-Host "`n[FINAL SPEECH RESULT]: $line`n" -ForegroundColor Green
-                # Parse text using IndexOf
-                $idx = $line.IndexOf('"text":')
-                if ($idx -ge 0) {
-                    $sub = $line.Substring($idx + 8)
-                    $endIdx = $sub.IndexOf('",')
-                    if ($endIdx -lt 0) { $endIdx = $sub.IndexOf('"}') }
-                    if ($endIdx -gt 0) {
-                        $cleanText = $sub.Substring(0, $endIdx)
-                        Write-Host "Injecting Text: $cleanText" -ForegroundColor Cyan
-                        [System.Windows.Forms.SendKeys]::SendWait($cleanText)
+        if ($line -and $line.Trim().Length -gt 0) {
+            try {
+                $msg = $line | ConvertFrom-Json
+                if ($msg.type -eq "partial") {
+                    Write-Host "  ... Partial: `"$($msg.text)`"" -ForegroundColor DarkGray
+                } elseif ($msg.type -eq "final") {
+                    Write-Host "`n✨ [FINAL SPEECH TEXT]: `"$($msg.text)`"`n" -ForegroundColor Green
+                    if ($msg.text -and $msg.text.Trim().Length -gt 0) {
+                        Write-Host "✨ Injecting Text: '$($msg.text)'" -ForegroundColor Cyan
+                        try {
+                            [System.Windows.Forms.SendKeys]::SendWait($msg.text)
+                        } catch {
+                            Write-Host "⚠️ Text Injection notice: $($_.Exception.Message)" -ForegroundColor Gray
+                        }
                     }
+                } elseif ($msg.type -eq "heartbeat") {
+                    Write-Host "💓 [HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
                 }
-            } elseif ($line.Contains('"type":"heartbeat"') -or $line.Contains('"type": "heartbeat"')) {
-                Write-Host "[HEARTBEAT]: Android Server Ready" -ForegroundColor DarkCyan
+            } catch {
+                # Fallback if raw JSON print
+                Write-Host "  ... Raw TCP payload: $line" -ForegroundColor Gray
             }
         }
     }
