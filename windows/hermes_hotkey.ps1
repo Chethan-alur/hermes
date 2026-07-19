@@ -14,10 +14,10 @@ public class Win32Input {
     public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
     [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
+    public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 "@
 
@@ -44,6 +44,9 @@ function Connect-Transport {
     try {
         $global:tcpClient = New-Object System.Net.Sockets.TcpClient($HOST_IP, $PORT)
         $global:stream = $global:tcpClient.GetStream()
+        $global:reader = New-Object System.IO.StreamReader($global:stream)
+        $global:writer = New-Object System.IO.StreamWriter($global:stream)
+        $global:writer.AutoFlush = $true
         Write-Host "[CONNECTED] Connected to Android transport server at $HOST_IP`:$PORT" -ForegroundColor Green
         return $true
     } catch {
@@ -58,15 +61,13 @@ while (-not (Connect-Transport)) {
 
 $isListening = $false
 $wasKeyPressed = $false
-$reader = New-Object System.IO.StreamReader($global:stream)
-$writer = New-Object System.IO.StreamWriter($global:stream)
-$writer.AutoFlush = $true
-$wsh = New-Object -ComObject WScript.Shell
 
 function Send-HermesCommand($cmdName) {
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $json = "{`"version`":`"1.0`",`"type`":`"command`",`"command`":`"$cmdName`",`"timestamp`":$ts}"
-    $writer.WriteLine($json)
+    if ($global:writer) {
+        $global:writer.WriteLine($json)
+    }
 }
 
 function Set-WindowsTextClipboard($textToCopy) {
@@ -82,7 +83,6 @@ function Set-WindowsTextClipboard($textToCopy) {
 }
 
 function Send-Win32Paste {
-    # Send Ctrl+V via Win32 keybd_event
     [Win32Input]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl DOWN
     [Win32Input]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V DOWN
     Start-Sleep -Milliseconds 30
@@ -113,9 +113,9 @@ while ($true) {
     }
     $wasKeyPressed = $isKeyPressed
 
-    # Read all incoming stream lines
-    while ($global:stream.DataAvailable) {
-        $line = $reader.ReadLine()
+    # Read all incoming stream lines non-blockingly
+    if ($global:stream -and $global:stream.DataAvailable -and $global:reader) {
+        $line = $global:reader.ReadLine()
         if ($line -and $line.Trim().Length -gt 0) {
             try {
                 $msg = $line | ConvertFrom-Json
