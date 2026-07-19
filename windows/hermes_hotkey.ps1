@@ -94,12 +94,12 @@ while ($true) {
         if (-not $isListening) {
             $isListening = $true
             Write-Host ""
-            Write-Host "🔴 [SPEECH STARTED] Press [F12] again when finished speaking..." -ForegroundColor Red
+            Write-Host "[SPEECH STARTED] Press [F12] again when finished speaking..." -ForegroundColor Red
             Send-HermesCommand "start_listening"
         } else {
             $isListening = $false
             Write-Host ""
-            Write-Host "⏳ [SPEECH STOPPED] Processing transcript on Pixel 8 NPU..." -ForegroundColor Yellow
+            Write-Host "[SPEECH STOPPED] Processing transcript on Pixel 8 NPU..." -ForegroundColor Yellow
             Send-HermesCommand "stop_listening"
         }
     }
@@ -116,10 +116,10 @@ while ($true) {
                 } elseif ($msg.type -eq "final") {
                     $ftext = $msg.text
                     Write-Host ""
-                    Write-Host "✅ [FINAL SPEECH RESULT]: $ftext" -ForegroundColor Green
+                    Write-Host "[FINAL SPEECH RESULT]: $ftext" -ForegroundColor Green
                     Write-Host ""
                     if ($ftext -and $ftext.Trim().Length -gt 0) {
-                        Write-Host "📋 [PASTING VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
+                        Write-Host "[PASTING VIA Ctrl+V]: $ftext" -ForegroundColor Cyan
                         Set-WindowsTextClipboard $ftext
                         Start-Sleep -Milliseconds 100
                         Send-Win32Paste
