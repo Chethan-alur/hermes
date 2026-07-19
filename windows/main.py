@@ -2,7 +2,7 @@
 """
 Windows Companion Daemon - Project Hermes
 Coordinates Global Hotkey, TCP Transport, and Text Injection into active window.
-Includes interactive CLI fallback for WSL/Linux test environments.
+Supports background daemon mode and WSL/Linux terminal mode.
 """
 
 import sys
@@ -51,24 +51,31 @@ class HermesWindowsDaemon:
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received. Shutting down...")
                 self.stop()
+        elif not sys.stdin.isatty():
+            logger.info("Hermes Companion running in background daemon mode.")
+            try:
+                while self.running:
+                    time.sleep(1.0)
+            except (KeyboardInterrupt, SystemExit):
+                self.stop()
         else:
             logger.info("Running in Terminal Interactive Mode (pynput missing/WSL environment).")
             print("\n" + "=" * 60)
             print("🎙️ Project Hermes Terminal Controller (WSL / Linux Mode)")
             print("=" * 60)
-            print("Press [Enter] to START listening -> Speak into phone -> Press [Enter] to STOP listening.")
+            print("Type 's' and press [Enter] to START/STOP Push-To-Talk.")
             print("Type 'q' and press [Enter] to quit.\n")
 
             try:
                 while self.running:
-                    user_input = input("Press [Enter] to toggle Push-To-Talk (or 'q' to quit) > ").strip()
-                    if user_input.lower() in ["q", "quit", "exit"]:
+                    user_input = input("Type 's' [Enter] to toggle Push-To-Talk (or 'q' to quit) > ").strip().lower()
+                    if user_input in ["q", "quit", "exit"]:
                         self.stop()
                         break
-                    
-                    self.toggle_push_to_talk()
+                    elif user_input in ["s", "speak", "talk", ""]:
+                        self.toggle_push_to_talk()
             except (KeyboardInterrupt, EOFError):
-                logger.info("Keyboard interrupt received. Shutting down...")
+                logger.info("Shutting down daemon...")
                 self.stop()
 
     def toggle_push_to_talk(self):

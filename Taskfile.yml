@@ -78,9 +78,16 @@ tasks:
       - '{{.ADB}} forward --list'
 
   windows:run:
-    desc: Launch Windows companion application daemon
+    desc: Launch Windows companion application daemon in background
     cmds:
-      - python3 windows/main.py
+      - sh -c "nohup python3 windows/main.py > windows.log 2>&1 &"
+      - echo "Hermes Windows companion running in background (log windows.log). Run task windows:stop to stop."
+
+  windows:stop:
+    desc: Stop running Windows companion application daemon
+    cmds:
+      - pkill -f "python3 windows/main.py" || true
+      - echo "🛑 Hermes Windows companion daemon stopped."
 
   test:
     desc: Run protocol schema validation and unit tests
