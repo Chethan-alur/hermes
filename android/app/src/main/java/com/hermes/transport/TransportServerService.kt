@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.speech.SpeechRecognizer
 import android.util.Log
 import com.hermes.speech.AndroidSpeechEngine
 import com.hermes.speech.SpeechEngine
@@ -23,6 +24,13 @@ class TransportServerService : Service() {
     private var writer: PrintWriter? = null
     private var isRunning = false
     private var speechEngine: SpeechEngine? = null
+
+    // Socket writes must never run on the main/UI thread: SpeechRecognizer callbacks are
+    // delivered on the main thread, and a blocking socket write there throws
+    // NetworkOnMainThreadException (silently swallowed below), which is why real
+    // partial/final/error results never reached the client. A single-thread executor keeps
+    // writes off the main thread while preserving message ordering.
+    private val senderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     companion object {
         private const val TAG = "TransportServer"
@@ -49,6 +57,7 @@ class TransportServerService : Service() {
         stopServer()
         speechEngine?.destroy()
         speechEngine = null
+        senderExecutor.shutdown()
         super.onDestroy()
     }
 
@@ -198,19 +207,24 @@ class TransportServerService : Service() {
 
     private fun sendJson(json: JSONObject) {
         val raw = json.toString()
-        synchronized(activeWriters) {
-            val iterator = activeWriters.iterator()
-            while (iterator.hasNext()) {
-                val writer = iterator.next()
-                try {
-                    writer.println(raw)
-                    if (writer.checkError()) {
+        // Dispatch the actual socket write off the caller's thread (see senderExecutor note).
+        senderExecutor.execute {
+            synchronized(activeWriters) {
+                val iterator = activeWriters.iterator()
+                while (iterator.hasNext()) {
+                    val writer = iterator.next()
+                    try {
+                        writer.println(raw)
+                        if (writer.checkError()) {
+                            Log.w(TAG, "Client writer reported error; removing it.")
+                            iterator.remove()
+                        } else {
+                            Log.d(TAG, "Broadcast JSON to client: $raw")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "sendJson write failed, removing client writer: ${e.message}")
                         iterator.remove()
-                    } else {
-                        Log.d(TAG, "Broadcast JSON to client: $raw")
                     }
-                } catch (e: Exception) {
-                    iterator.remove()
                 }
             }
         }
@@ -218,9 +232,15 @@ class TransportServerService : Service() {
 
     private fun getErrorCodeString(code: Int): String {
         return when (code) {
-            7 -> "SPEECH_TIMEOUT"
-            3 -> "AUDIO_RECORD_ERROR"
-            5 -> "CLIENT_ERROR"
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+            SpeechRecognizer.ERROR_NETWORK -> "NETWORK_ERROR"
+            SpeechRecognizer.ERROR_AUDIO -> "AUDIO_RECORD_ERROR"
+            SpeechRecognizer.ERROR_SERVER -> "SERVER_ERROR"
+            SpeechRecognizer.ERROR_CLIENT -> "CLIENT_ERROR"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "INSUFFICIENT_PERMISSIONS"
             else -> "UNKNOWN_ERROR"
         }
     }
