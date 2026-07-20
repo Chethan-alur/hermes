@@ -6,3 +6,6 @@ __pycache__/
 build/
 app/build/
 *.apk
+
+# Windows installer build output
+windows/dist/

@@ -103,6 +103,11 @@ tasks:
     cmds:
       - powershell.exe -ExecutionPolicy Bypass -File windows/uninstall_hermes.ps1
 
+  windows:installer:build:
+    desc: "Build packaged Setup.exe (Inno Setup 6). NOTE: run from a NATIVE Windows shell - WSL cannot launch .exe. See windows/installer/README.md"
+    cmds:
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "ISCC.exe windows\installer\hermes.iss"
+
   test:
     desc: Run protocol schema validation and unit tests
     cmds:
