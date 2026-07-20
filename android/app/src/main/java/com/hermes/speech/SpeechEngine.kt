@@ -2,6 +2,8 @@ package com.hermes.speech
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -61,6 +63,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private val accumulated = StringBuilder()
     private var lastPartial = ""
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var firstReadyOfSession = false
+    private var toneGen: ToneGenerator? = null
 
     companion object {
         private const val TAG = "AndroidSpeechEngine"
@@ -73,6 +77,16 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         private const val BUSY_BACKOFF_MS = 450L
         private const val RECREATE_AT_BUSY = 3
         private const val GIVE_UP_BUSY = 8
+
+        // Audible cues played by the phone. STREAM_ALARM stays audible under silent/DND,
+        // which matters when the phone is used as a desk mic. Java static-final ints can't
+        // be a Kotlin `const val`, so the stream/tone type are plain `val`.
+        private val CUE_STREAM = AudioManager.STREAM_ALARM
+        private val CUE_START_TONE = ToneGenerator.TONE_PROP_BEEP
+        private val CUE_STOP_TONE = ToneGenerator.TONE_PROP_BEEP2
+        private const val CUE_VOLUME = 80          // 0..100
+        private const val CUE_START_MS = 150
+        private const val CUE_STOP_MS = 120
     }
 
     init {
@@ -90,6 +104,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         this.lastPartial = ""
         this.finalized = false
         this.forceDefaultThisSession = false
+        this.firstReadyOfSession = true
         this.sessionActive = true
         ensureRecognizer(prefersOffline())
         listener?.invoke(SpeechEvent.ListeningStarted)
@@ -114,6 +129,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         mainHandler.removeCallbacksAndMessages(null)
         try { recognizer?.destroy() } catch (_: Exception) {}
         recognizer = null
+        try { toneGen?.release() } catch (_: Exception) {}
+        toneGen = null
         listener = null
         segmentRunning = false
     }
@@ -222,6 +239,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         flushPartial()
         val text = accumulated.toString().trim()
         Log.i(TAG, "Final (accumulated): \"$text\"")
+        Log.i(TAG, "Stopped cue played.")
+        playCue(CUE_STOP_TONE, CUE_STOP_MS)
         listener?.invoke(SpeechEvent.ListeningStopped)
         listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
     }
@@ -264,6 +283,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 busyCount = 0
+                if (firstReadyOfSession) {
+                    firstReadyOfSession = false
+                    Log.i(TAG, "Listening cue played (start).")
+                    playCue(CUE_START_TONE, CUE_START_MS)
+                }
                 listener?.invoke(SpeechEvent.ReadyForSpeech)
             }
 
@@ -331,6 +355,18 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
+    }
+
+    /** One-shot audible cue played by the phone (start beep when ready, stop beep on finalize). */
+    private fun playCue(tone: Int, durationMs: Int) {
+        try {
+            val tg = toneGen ?: ToneGenerator(CUE_STREAM, CUE_VOLUME).also { toneGen = it }
+            tg.startTone(tone, durationMs)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Audio cue unavailable: ${e.message}")
+            try { toneGen?.release() } catch (_: Exception) {}
+            toneGen = null
+        }
     }
 
     private fun getErrorMessage(errorCode: Int): String {
