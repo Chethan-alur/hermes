@@ -1,5 +1,5 @@
 {
-  "mode": "Toggle",
+  "mode": "PushToTalk",
   "host": "127.0.0.1",
   "port": 9999,
   "hotkeys": [163]

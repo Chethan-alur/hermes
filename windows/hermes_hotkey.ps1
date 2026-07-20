@@ -75,7 +75,7 @@ function Write-Log {
 
 # --- Configuration -------------------------------------------------------------
 function Load-Config {
-    $cfg = [ordered]@{ mode = 'Toggle'; host = '127.0.0.1'; port = 9999; hotkeys = @(163) }  # 163 = Right Ctrl
+    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163) }  # 163 = Right Ctrl
     if (Test-Path $global:ConfigPath) {
         try {
             $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
@@ -85,7 +85,7 @@ function Load-Config {
             if ($j.hotkeys) { $cfg.hotkeys = @($j.hotkeys | ForEach-Object { [int]$_ }) }
         } catch { Write-Log "Config parse failed; using defaults. $($_.Exception.Message)" 'DarkYellow' }
     }
-    if ($cfg.mode -ne 'Toggle' -and $cfg.mode -ne 'PushToTalk') { $cfg.mode = 'Toggle' }
+    if ($cfg.mode -ne 'Toggle' -and $cfg.mode -ne 'PushToTalk') { $cfg.mode = 'PushToTalk' }
     return $cfg
 }
 

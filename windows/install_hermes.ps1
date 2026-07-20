@@ -15,13 +15,23 @@ $destDir = Join-Path $env:LOCALAPPDATA 'ProjectHermes'
 Write-Host "Installing Project Hermes to $destDir ..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 
-# Always refresh the program files; preserve an existing user config (chosen mode).
+# Refresh the program files. For the config, MERGE rather than overwrite: keep the user's
+# host/port (now a USB-tether / Wi-Fi / WireGuard IP under the current transport) but
+# (re)apply the shipped default mode (PushToTalk) and hotkey (Right Ctrl / VK 163). This
+# fixes a stale hotkey (e.g. an old [123]=F12) without clobbering the connection setting.
 Copy-Item (Join-Path $srcDir 'hermes_hotkey.ps1')   (Join-Path $destDir 'hermes_hotkey.ps1')   -Force
 Copy-Item (Join-Path $srcDir 'hermes_launcher.vbs') (Join-Path $destDir 'hermes_launcher.vbs') -Force
-$destCfg = Join-Path $destDir 'hermes.config.json'
-if (-not (Test-Path $destCfg)) {
-    Copy-Item (Join-Path $srcDir 'hermes.config.json') $destCfg -Force
+$destCfg  = Join-Path $destDir 'hermes.config.json'
+$destHost = '127.0.0.1'; $destPort = 9999
+if (Test-Path $destCfg) {
+    try {
+        $existing = Get-Content $destCfg -Raw | ConvertFrom-Json
+        if ($existing.host) { $destHost = [string]$existing.host }
+        if ($existing.port) { $destPort = [int]$existing.port }
+    } catch {}
 }
+([ordered]@{ mode = 'PushToTalk'; host = $destHost; port = $destPort; hotkeys = @(163) } | ConvertTo-Json) |
+    Set-Content -Path $destCfg -Encoding UTF8
 
 $launcher = Join-Path $destDir 'hermes_launcher.vbs'
 $wsh      = New-Object -ComObject WScript.Shell
@@ -55,5 +65,6 @@ Write-Host "  Auto-start at logon : $startupLnk" -ForegroundColor Gray
 Write-Host "  Start Menu shortcut : $programsLnk" -ForegroundColor Gray
 Write-Host "  Program files       : $destDir" -ForegroundColor Gray
 Write-Host ""
-Write-Host "Note: the ADB port-forward (tcp:9999) and the Android app must be running" -ForegroundColor DarkYellow
-Write-Host "for the tray icon to turn active; the daemon retries the connection automatically." -ForegroundColor DarkYellow
+Write-Host "Note: the Android app must be running and reachable at the host:port set in" -ForegroundColor DarkYellow
+Write-Host "hermes.config.json (USB-tether / Wi-Fi / WireGuard IP) for the tray to go active;" -ForegroundColor DarkYellow
+Write-Host "the daemon retries the connection automatically." -ForegroundColor DarkYellow
