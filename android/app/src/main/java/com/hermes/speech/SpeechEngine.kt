@@ -37,9 +37,15 @@ interface SpeechEngine {
  * [SpeechEvent.FinalResult] (accumulated text, with the last partial folded in) is emitted
  * only on stop.
  *
- * The recognizer is created lazily (an idle engine never holds the shared recognition
- * service) and ERROR_RECOGNIZER_BUSY is handled with backoff + recreate + give-up, never a
- * tight retry loop -- a tight loop jams the system recognition service device-wide.
+ * Recognizer selection:
+ *  - Offline (default): the on-device recognizer (createOnDeviceSpeechRecognizer) -- on a
+ *    Pixel this is the good Tensor model, far better than the device's default basic engine.
+ *    If the on-device model for the language is not downloaded (ERROR_LANGUAGE_UNAVAILABLE),
+ *    we trigger a download and fall back to the default recognizer for that session.
+ *  - Online: the default recognizer with EXTRA_PREFER_OFFLINE=false.
+ *
+ * The recognizer is created lazily, and ERROR_RECOGNIZER_BUSY is handled with backoff +
+ * recreate + give-up (never a tight loop, which jams the system recognition service).
  */
 class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private var recognizer: SpeechRecognizer? = null
@@ -50,6 +56,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     @Volatile private var segmentRunning = false
     @Volatile private var finalized = false
     @Volatile private var busyCount = 0
+    private var usingOnDevice: Boolean? = null          // null = no recognizer yet
+    private var forceDefaultThisSession = false         // on-device model missing -> fall back
     private val accumulated = StringBuilder()
     private var lastPartial = ""
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -61,17 +69,17 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         const val PREFS = "hermes_prefs"
         const val KEY_PREFER_OFFLINE = "prefer_offline"
 
-        private const val RESTART_MS = 150L        // normal restart after an endpoint
-        private const val BUSY_BACKOFF_MS = 450L   // slow retry when the service is busy
-        private const val RECREATE_AT_BUSY = 3     // recreate the recognizer after N busy
-        private const val GIVE_UP_BUSY = 8         // give up (report error) after N busy
+        private const val RESTART_MS = 150L
+        private const val BUSY_BACKOFF_MS = 450L
+        private const val RECREATE_AT_BUSY = 3
+        private const val GIVE_UP_BUSY = 8
     }
 
     init {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.e(TAG, "Speech recognition unavailable on this device.")
         }
-        // The recognizer is created lazily in ensureRecognizer() on first use.
+        // Recognizer is created lazily in ensureRecognizer() on first use.
     }
 
     override fun startListening(onEvent: (SpeechEvent) -> Unit) {
@@ -81,8 +89,9 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         this.accumulated.setLength(0)
         this.lastPartial = ""
         this.finalized = false
+        this.forceDefaultThisSession = false
         this.sessionActive = true
-        ensureRecognizer()
+        ensureRecognizer(prefersOffline())
         listener?.invoke(SpeechEvent.ListeningStarted)
         Log.i(TAG, "Session started (continuous capture).")
         startSegment()
@@ -95,11 +104,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         try { recognizer?.stopListening() } catch (e: Exception) {
             Log.w(TAG, "stopListening ignored exception: ${e.message}")
         }
-        if (!segmentRunning) {
-            emitFinal()
-        } else {
-            mainHandler.postDelayed({ emitFinal() }, 1200)
-        }
+        if (!segmentRunning) emitFinal()
+        else mainHandler.postDelayed({ emitFinal() }, 1200)
     }
 
     override fun destroy() {
@@ -112,28 +118,13 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         segmentRunning = false
     }
 
-    private fun ensureRecognizer() {
-        if (recognizer != null) return
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        setupRecognitionListener()
-    }
+    // --- Configuration helpers ---------------------------------------------------
 
-    private fun recreateRecognizer() {
-        try { recognizer?.destroy() } catch (_: Exception) {}
-        recognizer = null
-        ensureRecognizer()
-    }
+    private fun prefersOffline(): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PREFER_OFFLINE, true)
 
-    private fun startSegment() {
-        if (!sessionActive) return
-        segmentRunning = true
-        lastPartial = ""
-        val preferOffline = context
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_PREFER_OFFLINE, true)
-        Log.i(TAG, "Segment start (lang=$LANGUAGE offline=$preferOffline)")
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    private fun buildRecognizeIntent(preferOffline: Boolean): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, LANGUAGE)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, LANGUAGE)
@@ -144,8 +135,57 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MILLIS)
         }
+
+    private fun ensureRecognizer(preferOffline: Boolean) {
+        val wantOnDevice = preferOffline &&
+            !forceDefaultThisSession &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        if (recognizer != null && usingOnDevice == wantOnDevice) return
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = try {
+            when {
+                wantOnDevice -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                SpeechRecognizer.isRecognitionAvailable(context) -> SpeechRecognizer.createSpeechRecognizer(context)
+                else -> null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "createRecognizer failed: ${e.message}"); null
+        }
+        usingOnDevice = if (recognizer != null) wantOnDevice else null
+        if (recognizer != null) setupRecognitionListener()
+        Log.i(TAG, "Recognizer=${if (usingOnDevice == true) "on-device" else "default"} available=${recognizer != null}")
+    }
+
+    private fun recreateRecognizer() {
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = null
+        usingOnDevice = null
+        ensureRecognizer(prefersOffline())
+    }
+
+    /** Ask the system to download the on-device model for our language (best effort). */
+    private fun triggerOnDeviceDownload() {
         try {
-            recognizer?.startListening(intent)
+            if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) return
+            val dl = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            dl.triggerModelDownload(buildRecognizeIntent(true))
+            Log.i(TAG, "Requested on-device model download for $LANGUAGE.")
+            mainHandler.postDelayed({ try { dl.destroy() } catch (_: Exception) {} }, 60000)
+        } catch (e: Exception) {
+            Log.w(TAG, "triggerModelDownload failed: ${e.message}")
+        }
+    }
+
+    // --- Session / segment control ----------------------------------------------
+
+    private fun startSegment() {
+        if (!sessionActive) return
+        segmentRunning = true
+        lastPartial = ""
+        val preferOffline = prefersOffline()
+        Log.i(TAG, "Segment start (lang=$LANGUAGE offline=$preferOffline onDevice=${usingOnDevice == true})")
+        try {
+            recognizer?.startListening(buildRecognizeIntent(preferOffline))
         } catch (e: Exception) {
             Log.w(TAG, "startListening failed: ${e.message}")
             scheduleRestart(BUSY_BACKOFF_MS)
@@ -205,6 +245,21 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         }
     }
 
+    /** On-device model missing: download it and fall back to the default recognizer now. */
+    private fun handleLanguageUnavailable(error: Int) {
+        if (usingOnDevice == true && !forceDefaultThisSession) {
+            Log.w(TAG, "On-device $LANGUAGE model unavailable; downloading + falling back to default.")
+            triggerOnDeviceDownload()
+            forceDefaultThisSession = true
+            ensureRecognizer(prefersOffline())   // wantOnDevice now false -> default recognizer
+            scheduleRestart(BUSY_BACKOFF_MS)
+        } else {
+            sessionActive = false
+            finalized = true
+            listener?.invoke(SpeechEvent.Error(error, getErrorMessage(error)))
+        }
+    }
+
     private fun setupRecognitionListener() {
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
@@ -231,15 +286,15 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
                 }
                 Log.i(TAG, "Segment error: ${getErrorMessage(error)} (code $error)")
                 when (error) {
-                    // Normal endpoints during a hold: silence / no speech yet.
                     SpeechRecognizer.ERROR_NO_MATCH,
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                         busyCount = 0
                         continueOrFinalize()
                     }
-                    // Service occupied / transient client error: back off, do not hammer.
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
                     SpeechRecognizer.ERROR_CLIENT -> handleBusy(error)
+                    SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> handleLanguageUnavailable(error)
                     else -> {
                         sessionActive = false
                         finalized = true
@@ -289,6 +344,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
             SpeechRecognizer.ERROR_SERVER -> "Server error"
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input detected"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Language not supported"
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Language model not downloaded"
             else -> "Unknown speech recognition error"
         }
     }
