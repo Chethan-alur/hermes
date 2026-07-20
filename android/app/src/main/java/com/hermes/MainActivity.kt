@@ -17,7 +17,10 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.hermes.speech.AndroidSpeechEngine
 import com.hermes.speech.SpeechEngine
 import com.hermes.speech.SpeechEvent
+import com.hermes.transport.TransportPrefs
 import com.hermes.transport.TransportServerService
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusIcon: ImageView
     private lateinit var consoleText: TextView
     private lateinit var scrollConsole: ScrollView
+    private lateinit var textPort: TextView
     private var speechEngine: SpeechEngine? = null
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
@@ -43,6 +47,7 @@ class MainActivity : AppCompatActivity() {
         statusIcon = findViewById(R.id.status_icon)
         consoleText = findViewById(R.id.text_console)
         scrollConsole = findViewById(R.id.scroll_console)
+        textPort = findViewById(R.id.text_port)
 
         findViewById<MaterialButton>(R.id.btn_start_service).setOnClickListener { startHermesService() }
         findViewById<MaterialButton>(R.id.btn_stop_service).setOnClickListener { stopHermesService() }
@@ -59,17 +64,75 @@ class MainActivity : AppCompatActivity() {
             logEvent(if (isChecked) "Recognition mode: ONLINE (higher accuracy)" else "Recognition mode: OFFLINE (private)")
         }
 
+        // Transport selection: which underlying transport(s) the service is allowed to listen on.
+        val switchWifi = findViewById<MaterialSwitch>(R.id.switch_wifi)
+        val switchMobile = findViewById<MaterialSwitch>(R.id.switch_mobile)
+        val switchUsb = findViewById<MaterialSwitch>(R.id.switch_usb)
+        switchWifi.isChecked = prefs.getBoolean(TransportPrefs.KEY_LISTEN_WIFI, true)
+        switchMobile.isChecked = prefs.getBoolean(TransportPrefs.KEY_LISTEN_MOBILE, true)
+        switchUsb.isChecked = prefs.getBoolean(TransportPrefs.KEY_LISTEN_USB, true)
+        switchWifi.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_WIFI, c, "Wi-Fi") }
+        switchMobile.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_MOBILE, c, "Mobile data") }
+        switchUsb.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_USB, c, "USB tethering") }
+
         checkPermissions()
         speechEngine = AndroidSpeechEngine(this)
         startHermesService()
         setStatus("READY", R.color.status_ready)
         logEvent("System initialised. Foreground transport service started on port 9999.")
+        refreshServingAddresses()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The set of serving addresses (USB tether, Wi-Fi, WireGuard) can change while away.
+        refreshServingAddresses()
     }
 
     override fun onDestroy() {
         speechEngine?.destroy()
         speechEngine = null
         super.onDestroy()
+    }
+
+    /** Persist a transport toggle and ask the running service to re-evaluate its listener. */
+    private fun onTransportToggle(key: String, enabled: Boolean, label: String) {
+        getSharedPreferences(AndroidSpeechEngine.PREFS, MODE_PRIVATE)
+            .edit().putBoolean(key, enabled).apply()
+        logEvent("Transport $label: ${if (enabled) "ENABLED" else "disabled"}")
+        reconfigureService()
+        refreshServingAddresses()
+    }
+
+    private fun reconfigureService() {
+        val intent = Intent(this, TransportServerService::class.java).apply {
+            action = TransportServerService.ACTION_RECONFIGURE
+        }
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    /** List the current non-loopback IPv4 addresses so the user can point the desktop client here. */
+    private fun refreshServingAddresses() {
+        val lines = mutableListOf<String>()
+        try {
+            for (nif in NetworkInterface.getNetworkInterfaces()) {
+                if (!nif.isUp || nif.isLoopback) continue
+                val ipv4 = nif.inetAddresses.toList()
+                    .filterIsInstance<Inet4Address>()
+                    .firstOrNull { !it.isLoopbackAddress }
+                    ?.hostAddress ?: continue
+                val name = nif.name.lowercase()
+                val label = when {
+                    name.startsWith("usb") || name.startsWith("rndis") || name.startsWith("ncm") -> "USB"
+                    name.startsWith("wlan") -> "Wi-Fi"
+                    name.startsWith("tun") || name.startsWith("wg") -> "WireGuard"
+                    name.startsWith("rmnet") || name.startsWith("ccmni") -> "Mobile"
+                    else -> nif.name
+                }
+                lines.add("$label  $ipv4:9999")
+            }
+        } catch (_: Exception) {}
+        textPort.text = if (lines.isEmpty()) getString(R.string.serving_none) else lines.joinToString("\n")
     }
 
     private fun checkPermissions() {

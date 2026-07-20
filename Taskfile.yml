@@ -31,13 +31,12 @@ tasks:
       - echo "✅ Environment setup complete. SDK linked to {{.ANDROID_HOME}}"
 
   deploy:
-    desc: One-command full deployment (setup env, build APK, install via ADB, forward port)
+    desc: Dev deployment (build APK, install via ADB, launch). Installing requires USB debugging temporarily ON.
     deps: [setup, android:build]
     cmds:
       - task: android:install
-      - task: adb:forward
       - '{{.ADB}} shell am start -n com.hermes/.MainActivity'
-      - echo "✅ Deployment complete! App launched & listening on port 9999. Run 'task windows:run' to start."
+      - echo "App installed and launched. Runtime uses USB tethering (no ADB) - enable it on the phone and set host in windows/hermes.config.json to the tether or WireGuard IP, then run task windows-run"
 
   android:build:
     desc: Build the Android companion app APK
@@ -67,7 +66,7 @@ tasks:
       - ./gradlew clean
 
   adb:forward:
-    desc: Setup ADB port forwarding (tcp:9999 -> tcp:9999)
+    desc: (Legacy/optional) ADB port forward tcp:9999 — only if using ADB instead of USB tethering
     cmds:
       - '{{.ADB}} forward tcp:9999 tcp:9999'
 

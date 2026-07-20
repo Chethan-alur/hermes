@@ -21,7 +21,7 @@ When you hold a hotkey on Windows (default: **`Right Ctrl`**), your phone transc
                              ▼
                  🖥️ Windows Companion App
                              │
-                  🔌 USB Cable (ADB TCP:9999)
+              🔌 USB Tethering / Wi-Fi / Mobile (TCP:9999)
                              │
                  📱 Android Companion App
                              │
@@ -48,9 +48,11 @@ When you hold a hotkey on Windows (default: **`Right Ctrl`**), your phone transc
 
 ### Software Prerequisites
 1. **Python 3.10+** (on Windows host PC).
-2. **Android Platform Tools (ADB)** installed and added to System PATH.
+2. **Android Platform Tools (ADB)** installed and added to System PATH — needed only to *install/update* the APK from source, not for runtime.
 3. **Android Studio** (if building the Android app from source).
-4. **USB Debugging** enabled on your Android phone (*Settings -> Developer Options -> USB Debugging*).
+4. **USB Debugging** — required *only while installing the APK* (*Settings -> Developer Options -> USB Debugging*). Runtime communication uses **USB tethering** instead of ADB, so developer options can stay **off** during normal use (useful when banking or other apps refuse to run with developer options enabled).
+
+> **Transports:** The Android app lets you choose which transport(s) to serve on — **Wi-Fi**, **Mobile data**, and **USB tethering** — from switches in the app. It listens only while a selected transport is actually available, which also minimises battery. USB uses USB tethering (a `usb0` network interface), not ADB.
 
 ---
 
@@ -66,10 +68,10 @@ task setup
 # 2. Build Android companion app APK:
 task android:build
 
-# 3. Install APK onto connected Android device:
+# 3. Install APK onto connected Android device (USB debugging on, temporarily):
 task android:install
 
-# 4. Setup ADB USB port forwarding (tcp:9999):
+# 4. (Legacy/optional) ADB port forward — only if using ADB instead of USB tethering:
 task adb:forward
 
 # 5. Run test suite:
@@ -96,21 +98,32 @@ task test
 ## 🚀 4. Deploying & Running Hermes
 
 ### Step 1: Install the Android App
-Install the compiled APK onto your phone using ADB:
+Install the compiled APK onto your phone (enable USB debugging temporarily for this step only):
 ```bash
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
-Launch the **Hermes** app on your phone and grant microphone permissions.
+Launch the **Hermes** app on your phone and grant microphone permissions. You may now disable
+developer options again — runtime does not need ADB.
 
-### Step 2: Set Up USB Port Forwarding
-Set up the high-speed USB communication bridge:
-```bash
-# Using the built-in skill script:
-python3 .agents/skills/adb-tunnel-manager/scripts/manage_adb_forward.py --setup
+### Step 2: Establish the transport link
+Pick one of the transports enabled in the app's **Transports** switches:
 
-# Or manually via ADB:
-adb forward tcp:9999 tcp:9999
+* **USB (no ADB):** On the phone, enable **USB tethering** (*Settings → Network & internet →
+  Hotspot & tethering → USB tethering*). The app's status card shows the phone's serving address
+  (e.g. `USB  192.168.42.129:9999`).
+* **Wi-Fi / Mobile data (via WireGuard):** Bring up your WireGuard tunnel; the app shows its
+  WireGuard address.
+
+Then point the client at that address by setting `host` (and `port`) in
+[`windows/hermes.config.json`](file:///home/calur/github/hermes/windows/hermes.config.json):
+```json
+{ "mode": "Toggle", "host": "192.168.42.129", "port": 9999, "hotkeys": [163] }
 ```
+Both the Python daemon and the PowerShell hotkey client read this file. (You can also override with
+the `HERMES_HOST` / `HERMES_PORT` environment variables.)
+
+> *Legacy ADB path (optional):* if you prefer ADB, keep `host` at `127.0.0.1` and run
+> `adb forward tcp:9999 tcp:9999` (or `task adb:forward`). This requires USB debugging to stay on.
 
 ### Step 3: Launch the Windows Companion Daemon
 Run the main Windows client:
@@ -170,7 +183,7 @@ If you are an **AI Coding Agent** (or a developer pairing with an AI agent), thi
 * 🛠️ `protocol-validator`: Validates JSON payloads against schemas.
 * 📋 `rtm-manager`: Inspects requirement traceability alignment.
 * 🧪 `test-runner`: Runs unified test suites & verifies empirical pass gates.
-* 🔌 `adb-tunnel-manager`: Manages ADB port forwarding rules.
+* 🔌 `adb-tunnel-manager`: (Legacy/optional) Manages ADB port forwarding rules — superseded by USB tethering for runtime.
 
 ---
 

@@ -6,7 +6,9 @@ Maintains persistent TCP socket connection to Android companion over port 9999.
 Supports F12 ANSI escape sequences (^[[24~) in Linux/WSL terminal mode.
 """
 
+import os
 import sys
+import json
 import time
 import select
 import logging
@@ -166,8 +168,32 @@ class HermesWindowsDaemon:
             logger.info(f"[HEARTBEAT]: Android Server Ready (Status: {message.get('status')})")
 
 
+def load_config():
+    """Resolve the transport endpoint (host, port).
+
+    Reads windows/hermes.config.json — the same file the PowerShell hotkey client uses — so both
+    clients share one configuration source. For USB-tethering set ``host`` to the phone's tether IP
+    (e.g. 192.168.42.129); for Wi-Fi/mobile over WireGuard set it to the phone's WireGuard IP. The
+    environment variables HERMES_HOST / HERMES_PORT override the file when present.
+    """
+    host, port = "127.0.0.1", 9999
+    config_path = Path(__file__).resolve().parent / "hermes.config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            host = str(data.get("host", host))
+            port = int(data.get("port", port))
+    except Exception as e:
+        logger.warning(f"Could not read {config_path.name}; using defaults ({host}:{port}). {e}")
+    host = os.environ.get("HERMES_HOST", host)
+    port = int(os.environ.get("HERMES_PORT", port))
+    return host, port
+
+
 def main():
-    daemon = HermesWindowsDaemon()
+    host, port = load_config()
+    logger.info(f"Target Android transport endpoint: {host}:{port}")
+    daemon = HermesWindowsDaemon(host=host, port=port)
     daemon.start()
 
 

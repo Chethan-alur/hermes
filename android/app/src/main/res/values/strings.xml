@@ -5,7 +5,8 @@
 
     <string name="label_service_status">SERVICE STATUS</string>
     <string name="status_ready">READY</string>
-    <string name="port_info">Listening on 127.0.0.1 : 9999</string>
+    <string name="port_info">Resolving serving address…</string>
+    <string name="serving_none">No serving address (enable a transport)</string>
 
     <string name="label_controls">Controls</string>
     <string name="btn_start_service">Start Service</string>
@@ -17,4 +18,9 @@
     <string name="btn_clear">Clear</string>
 
     <string name="label_online_mode">Online mode (higher accuracy, not private)</string>
+
+    <string name="label_transport">Transports</string>
+    <string name="label_listen_wifi">Wi-Fi</string>
+    <string name="label_listen_mobile">Mobile data</string>
+    <string name="label_listen_usb">USB (tethering)</string>
 </resources>
