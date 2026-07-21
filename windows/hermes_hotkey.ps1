@@ -10,7 +10,14 @@
 #
 # Configuration is read from hermes.config.json next to this script; the tray icon
 # menu can switch modes at runtime and persists the choice.
+#
+# Dev preview:  .\hermes_hotkey.ps1 -Preview   runs a scripted dictation (no phone / no TCP) that
+# drives the on-screen overlay (REQ-FUNC-014) through Listening -> partial growth -> final -> fade,
+# so its placement and focus-safety can be verified on the Windows host without the phone. It calls
+# the same overlay functions the live path uses, so it also acts as a self-test.
 # ------------------------------------------------------------------------------
+
+param([switch]$Preview)
 
 Add-Type -TypeDefinition @"
 using System;
@@ -60,6 +67,37 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Dictation overlay window (REQ-FUNC-014). A borderless HUD that must NEVER become the foreground
+# window: doing so would steal focus from the caret and break the paste-into-target-window flow.
+# WS_EX_NOACTIVATE keeps it from ever activating; WS_EX_TRANSPARENT makes it click-through (mouse
+# events fall to the editor beneath); WS_EX_TOOLWINDOW hides it from the taskbar / Alt-Tab;
+# WS_EX_TOPMOST keeps it above other windows; WS_EX_LAYERED enables per-window Opacity. All drawing
+# is done in a Paint handler with double-buffering (set in the constructor) to avoid flicker.
+Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -TypeDefinition @"
+using System;
+using System.Windows.Forms;
+namespace Hermes {
+    public class OverlayForm : Form {
+        public OverlayForm() {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+            UpdateStyles();
+        }
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams {
+            get {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+                cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+                cp.ExStyle |= 0x00000008; // WS_EX_TOPMOST
+                cp.ExStyle |= 0x00080000; // WS_EX_LAYERED
+                cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (click-through)
+                return cp;
+            }
+        }
+    }
+}
+"@
+
 # --- Paths ---------------------------------------------------------------------
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $global:ConfigPath = Join-Path $ScriptDir 'hermes.config.json'
@@ -75,7 +113,7 @@ function Write-Log {
 
 # --- Configuration -------------------------------------------------------------
 function Load-Config {
-    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163) }  # 163 = Right Ctrl
+    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163); mic = 'auto'; overlay = $true }  # 163 = Right Ctrl
     if (Test-Path $global:ConfigPath) {
         try {
             $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
@@ -83,14 +121,18 @@ function Load-Config {
             if ($j.host)    { $cfg.host = [string]$j.host }
             if ($j.port)    { $cfg.port = [int]$j.port }
             if ($j.hotkeys) { $cfg.hotkeys = @($j.hotkeys | ForEach-Object { [int]$_ }) }
+            if ($j.mic)     { $cfg.mic = [string]$j.mic }
+            # $null check (not truthiness) so an explicit overlay=false is honoured, not treated as "absent".
+            if ($null -ne $j.overlay) { $cfg.overlay = [bool]$j.overlay }
         } catch { Write-Log "Config parse failed; using defaults. $($_.Exception.Message)" 'DarkYellow' }
     }
     if ($cfg.mode -ne 'Toggle' -and $cfg.mode -ne 'PushToTalk') { $cfg.mode = 'PushToTalk' }
+    if ($cfg.mic -notin @('auto','builtin','bluetooth')) { $cfg.mic = 'auto' }
     return $cfg
 }
 
 function Save-Config {
-    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST }
+    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST; mic = $script:MicPref; overlay = $script:OverlayEnabled }
     try { ($obj | ConvertTo-Json) | Set-Content -Path $global:ConfigPath -Encoding UTF8 } catch {}
 }
 
@@ -98,8 +140,10 @@ $cfg      = Load-Config
 $HOST_IP  = $cfg.host
 $PORT     = [int]$cfg.port
 $VK_LIST  = @($cfg.hotkeys)
-$script:Mode        = $cfg.mode
-$script:isListening = $false
+$script:Mode           = $cfg.mode
+$script:MicPref        = $cfg.mic
+$script:OverlayEnabled = [bool]$cfg.overlay
+$script:isListening    = $false
 $script:ShouldExit  = $false
 $script:targetHwnd  = [IntPtr]::Zero
 $script:consoleHwnd = [Win32Input]::GetConsoleWindow()
@@ -124,18 +168,43 @@ $global:IconRec  = New-CircleIcon ([System.Drawing.Color]::FromArgb(229, 57, 53)
 $script:menu       = New-Object System.Windows.Forms.ContextMenuStrip
 $script:itemStatus = New-Object System.Windows.Forms.ToolStripMenuItem 'Status: Ready'
 $script:itemStatus.Enabled = $false
+$script:itemServer = New-Object System.Windows.Forms.ToolStripMenuItem 'Server: -'
+$script:itemServer.Enabled = $false
+$script:itemMic    = New-Object System.Windows.Forms.ToolStripMenuItem 'Mic: -'
+$script:itemMic.Enabled = $false
+$script:itemAudio  = New-Object System.Windows.Forms.ToolStripMenuItem 'Audio: -'
+$script:itemAudio.Enabled = $false
 $script:itemToggle = New-Object System.Windows.Forms.ToolStripMenuItem 'Mode: Toggle (tap to start/stop)'
 $script:itemPTT    = New-Object System.Windows.Forms.ToolStripMenuItem 'Mode: Push-to-Talk (hold to talk)'
 $script:itemExit   = New-Object System.Windows.Forms.ToolStripMenuItem 'Exit Hermes'
 
+$script:menuMic  = New-Object System.Windows.Forms.ToolStripMenuItem 'Microphone'
+$script:micAuto  = New-Object System.Windows.Forms.ToolStripMenuItem 'Auto (Bluetooth, else phone)'
+$script:micPhone = New-Object System.Windows.Forms.ToolStripMenuItem 'Phone (built-in mic)'
+$script:micBt    = New-Object System.Windows.Forms.ToolStripMenuItem 'Bluetooth headset'
+$script:menuMic.DropDownItems.Add($script:micAuto)  | Out-Null
+$script:menuMic.DropDownItems.Add($script:micPhone) | Out-Null
+$script:menuMic.DropDownItems.Add($script:micBt)    | Out-Null
+
+$script:itemOverlay = New-Object System.Windows.Forms.ToolStripMenuItem 'Show dictation overlay'
+
 $script:itemToggle.Add_Click({ Set-Mode 'Toggle' })
 $script:itemPTT.Add_Click({ Set-Mode 'PushToTalk' })
+$script:micAuto.Add_Click({ Set-MicPref 'auto' })
+$script:micPhone.Add_Click({ Set-MicPref 'builtin' })
+$script:micBt.Add_Click({ Set-MicPref 'bluetooth' })
+$script:itemOverlay.Add_Click({ Set-OverlayEnabled (-not $script:OverlayEnabled) })
 $script:itemExit.Add_Click({ $script:ShouldExit = $true })
 
 $script:menu.Items.Add($script:itemStatus) | Out-Null
+$script:menu.Items.Add($script:itemServer) | Out-Null
+$script:menu.Items.Add($script:itemMic) | Out-Null
+$script:menu.Items.Add($script:itemAudio) | Out-Null
 $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $script:menu.Items.Add($script:itemToggle) | Out-Null
 $script:menu.Items.Add($script:itemPTT) | Out-Null
+$script:menu.Items.Add($script:menuMic) | Out-Null
+$script:menu.Items.Add($script:itemOverlay) | Out-Null
 $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $script:menu.Items.Add($script:itemExit) | Out-Null
 
@@ -158,6 +227,39 @@ function Set-Mode($m) {
     Write-Log "Mode switched to: $m" 'Cyan'
 }
 
+function Update-MicChecks {
+    $script:micAuto.Checked  = ($script:MicPref -eq 'auto')
+    $script:micPhone.Checked = ($script:MicPref -eq 'builtin')
+    $script:micBt.Checked    = ($script:MicPref -eq 'bluetooth')
+}
+
+function Update-OverlayCheck { $script:itemOverlay.Checked = $script:OverlayEnabled }
+
+# Toggle the on-screen dictation overlay (REQ-FUNC-014) and persist the choice. Disabling hides any
+# overlay currently on screen; the setting takes effect on the next dictation when enabling.
+function Set-OverlayEnabled([bool]$on) {
+    $script:OverlayEnabled = $on
+    Update-OverlayCheck
+    Save-Config
+    if (-not $on) { Hide-Overlay }
+    Write-Log "Dictation overlay: $(if ($on) { 'enabled' } else { 'disabled' })" 'Cyan'
+}
+
+# Tell the phone which microphone to use. Applies to the next dictation; remembered on the phone.
+function Send-SetMic($m) {
+    $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $json = "{`"version`":`"1.0`",`"type`":`"command`",`"command`":`"set_mic`",`"mic`":`"$m`",`"timestamp`":$ts}"
+    try { if ($global:writer) { $global:writer.WriteLine($json) } } catch {}
+}
+
+function Set-MicPref($m) {
+    $script:MicPref = $m
+    Update-MicChecks
+    Save-Config
+    Send-SetMic $m
+    Write-Log "Microphone preference: $m" 'Cyan'
+}
+
 function Set-ListeningState($listening) {
     $script:isListening = $listening
     if ($listening) {
@@ -171,6 +273,331 @@ function Set-ListeningState($listening) {
     }
 }
 Update-ModeChecks
+Update-MicChecks
+Update-OverlayCheck
+
+# --- Dictation overlay (HUD, REQ-FUNC-014) -------------------------------------
+# A dark, semi-transparent bar at the bottom-centre of the primary screen that visualises a live
+# dictation: a pulsing indicator + "Listening…" on start, the running partial transcript as words
+# are detected, then a green tick + the final transcript at the moment it is injected, before
+# fading out. The window is passive (see Hermes.OverlayForm above): it never activates, never
+# appears in the taskbar, and is click-through, so it cannot disturb the caret or the paste target.
+# All updates run on the main-loop thread (Process-HermesLine / Start-/Stop-Dictation), the same
+# thread as the WinForms message pump, so no cross-thread marshalling is needed.
+
+$script:overlay        = $null      # Hermes.OverlayForm instance (created lazily)
+$script:ovTimer        = $null      # animation + fade ticker
+$script:ovMeasureG     = $null      # offscreen Graphics used to measure wrapped text height
+$script:ovFont         = $null      # transcript font
+$script:ovLabelFont    = $null      # state-label font
+$script:ovState        = 'Idle'     # Idle | Listening | Finalizing | Final | Error | Info
+$script:ovText         = ''         # current transcript / message
+$script:ovPulse        = 0          # animation phase counter
+$script:ovOpacityTarget= 0.0        # opacity the fader eases towards
+$script:ovHideAt       = 0          # TickCount to begin auto-hide (0 = not scheduled)
+
+$script:OV_OPACITY = 0.93
+$script:OV_PADX    = 18
+$script:OV_PADY    = 13
+$script:OV_DOT     = 12
+$script:OV_GAP     = 12
+$script:OV_RADIUS  = 16
+$script:ovBackColor = [System.Drawing.Color]::FromArgb(24, 24, 27)
+$script:ovTextColor = [System.Drawing.Color]::FromArgb(244, 244, 246)
+$script:ovDimColor  = [System.Drawing.Color]::FromArgb(158, 158, 165)
+
+function New-RoundedRegion([int]$w, [int]$h, [int]$r) {
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $d = 2 * $r
+    $path.AddArc(0, 0, $d, $d, 180, 90)
+    $path.AddArc($w - $d, 0, $d, $d, 270, 90)
+    $path.AddArc($w - $d, $h - $d, $d, $d, 0, 90)
+    $path.AddArc(0, $h - $d, $d, $d, 90, 90)
+    $path.CloseAllFigures()
+    $region = New-Object System.Drawing.Region($path)
+    $path.Dispose()
+    return $region
+}
+
+function Get-OverlayLabel {
+    switch ($script:ovState) {
+        'Listening'  { 'Listening…' }
+        'Finalizing' { 'Transcribing…' }
+        'Error'      { 'Error' }
+        default      { '' }        # Final / Info / Idle carry no label
+    }
+}
+
+function Get-OverlayDotColor {
+    switch ($script:ovState) {
+        'Listening'  { [System.Drawing.Color]::FromArgb(229, 57, 53) }   # red (matches tray rec icon)
+        'Finalizing' { [System.Drawing.Color]::FromArgb(255, 179, 0) }   # amber
+        'Final'      { [System.Drawing.Color]::FromArgb(67, 190, 120) }  # green
+        'Error'      { [System.Drawing.Color]::FromArgb(229, 57, 53) }   # red
+        default      { [System.Drawing.Color]::FromArgb(130, 130, 135) } # grey (Info/Idle)
+    }
+}
+
+function Initialize-Overlay {
+    if ($script:overlay) { return }
+    $script:ovFont      = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Regular)
+    $script:ovLabelFont = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $bmp = New-Object System.Drawing.Bitmap 1, 1
+    $script:ovMeasureG = [System.Drawing.Graphics]::FromImage($bmp)
+
+    $f = New-Object Hermes.OverlayForm
+    $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $f.StartPosition   = [System.Windows.Forms.FormStartPosition]::Manual
+    $f.ShowInTaskbar   = $false
+    $f.TopMost         = $true
+    $f.BackColor       = $script:ovBackColor
+    $f.Opacity         = 0.0
+    $f.Add_Paint({ param($sender, $e) Draw-Overlay $e.Graphics })
+    $script:overlay = $f
+
+    $t = New-Object System.Windows.Forms.Timer
+    $t.Interval = 60
+    $t.Add_Tick({ Step-Overlay })
+    $script:ovTimer = $t
+}
+
+# Measure the wrapped transcript, size the bar to fit, and re-centre it near the bottom of the
+# primary working area (above the taskbar). Called whenever the state or text changes.
+function Update-OverlayBounds {
+    if (-not $script:overlay) { return }
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $width = [int][Math]::Min(560, $wa.Width * 0.6)
+    if ($width -lt 320) { $width = 320 }
+    $textX = $script:OV_PADX + $script:OV_DOT + $script:OV_GAP
+    $textW = $width - $textX - $script:OV_PADX
+
+    $contentH = 0
+    $label = Get-OverlayLabel
+    if ($label -ne '') {
+        $contentH += [int][Math]::Ceiling($script:ovMeasureG.MeasureString($label, $script:ovLabelFont).Height) + 2
+    }
+    if ($script:ovText -ne '') {
+        $sz = $script:ovMeasureG.MeasureString($script:ovText, $script:ovFont, [int]$textW)
+        $contentH += [int][Math]::Ceiling($sz.Height) + 4
+    } else {
+        $contentH += [int][Math]::Ceiling($script:ovMeasureG.MeasureString('Ag', $script:ovFont).Height)
+    }
+    $height = $contentH + ($script:OV_PADY * 2)
+    if ($height -lt 52) { $height = 52 }
+
+    $x = $wa.Left + [int](($wa.Width - $width) / 2)
+    $y = $wa.Bottom - $height - 120
+    $script:overlay.SetBounds($x, $y, $width, $height)
+    $script:overlay.Region = New-RoundedRegion $width $height $script:OV_RADIUS
+}
+
+function Draw-Overlay($g) {
+    if (-not $script:overlay) { return }
+    $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+    $w = $script:overlay.ClientSize.Width
+    $h = $script:overlay.ClientSize.Height
+
+    $bgBrush = New-Object System.Drawing.SolidBrush $script:ovBackColor
+    $g.FillRectangle($bgBrush, 0, 0, $w, $h)
+    $bgBrush.Dispose()
+
+    # Status dot; alpha pulses while listening so the user sees the app is actively capturing.
+    $base = Get-OverlayDotColor
+    $alpha = 255
+    if ($script:ovState -eq 'Listening') {
+        $phase = [Math]::Sin($script:ovPulse * 0.35)   # ~1.1s period at 60ms ticks
+        $alpha = [int](172 + 83 * $phase)
+        if ($alpha -lt 60)  { $alpha = 60 }
+        if ($alpha -gt 255) { $alpha = 255 }
+    }
+    $dotColor = [System.Drawing.Color]::FromArgb($alpha, $base.R, $base.G, $base.B)
+    $dotBrush = New-Object System.Drawing.SolidBrush $dotColor
+    $dotY = $script:OV_PADY + 3
+    $g.FillEllipse($dotBrush, $script:OV_PADX, $dotY, $script:OV_DOT, $script:OV_DOT)
+    $dotBrush.Dispose()
+
+    # A white tick over the green dot confirms the final transcript was produced/injected.
+    if ($script:ovState -eq 'Final') {
+        $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 2
+        $cx = $script:OV_PADX; $cy = $dotY
+        # Typed PointF[] so DrawLines binds the PointF (not Point) overload unambiguously.
+        $pts = [System.Drawing.PointF[]]@(
+            (New-Object System.Drawing.PointF([single]($cx + 2.5), [single]($cy + 6.5))),
+            (New-Object System.Drawing.PointF([single]($cx + 5.0), [single]($cy + 9.0))),
+            (New-Object System.Drawing.PointF([single]($cx + 9.5), [single]($cy + 3.0)))
+        )
+        $g.DrawLines($pen, $pts)
+        $pen.Dispose()
+    }
+
+    $textX = $script:OV_PADX + $script:OV_DOT + $script:OV_GAP
+    $textW = $w - $textX - $script:OV_PADX
+    $curY  = $script:OV_PADY
+
+    $label = Get-OverlayLabel
+    if ($label -ne '') {
+        $lblBrush = New-Object System.Drawing.SolidBrush $script:ovDimColor
+        $g.DrawString($label, $script:ovLabelFont, $lblBrush, [single]$textX, [single]$curY)
+        $curY += [int][Math]::Ceiling($g.MeasureString($label, $script:ovLabelFont).Height) + 2
+        $lblBrush.Dispose()
+    }
+
+    if ($script:ovText -ne '') {
+        $txtColor = if ($script:ovState -eq 'Final') { [System.Drawing.Color]::FromArgb(215, 245, 222) } else { $script:ovTextColor }
+        $txtBrush = New-Object System.Drawing.SolidBrush $txtColor
+        $rect = New-Object System.Drawing.RectangleF([single]$textX, [single]$curY, [single]$textW, [single]($h - $curY - $script:OV_PADY))
+        $g.DrawString($script:ovText, $script:ovFont, $txtBrush, $rect)
+        $txtBrush.Dispose()
+    }
+}
+
+# Runs every ~60ms while the overlay is on screen: advances the pulse, eases opacity toward its
+# target (fade in/out), triggers a scheduled auto-hide, and parks (hides + stops the timer) once
+# fully faded so the client consumes no cycles when idle.
+function Step-Overlay {
+    if (-not $script:overlay) { return }
+    $script:ovPulse++
+
+    if ($script:ovHideAt -ne 0 -and [Environment]::TickCount -ge $script:ovHideAt) {
+        $script:ovOpacityTarget = 0.0
+    }
+
+    $cur = [double]$script:overlay.Opacity
+    $target = [double]$script:ovOpacityTarget
+    if ([Math]::Abs($cur - $target) -lt 0.02) {
+        $cur = $target
+    } elseif ($cur -lt $target) {
+        $cur = [Math]::Min($target, $cur + 0.30)   # fade in over ~3 ticks
+    } else {
+        $cur = [Math]::Max($target, $cur - 0.12)   # fade out over ~8 ticks (~0.5s)
+    }
+    if ($cur -ne [double]$script:overlay.Opacity) { $script:overlay.Opacity = $cur }
+
+    if ($target -le 0.0 -and $cur -le 0.001) {
+        try { $script:overlay.Hide() } catch {}
+        $script:ovState  = 'Idle'
+        $script:ovText   = ''
+        $script:ovHideAt = 0
+        $script:ovTimer.Stop()
+        return
+    }
+
+    # Repaint only while something is actually moving (pulse or fade) to keep CPU near zero.
+    if ($script:ovState -eq 'Listening' -or $script:ovState -eq 'Finalizing' -or $cur -ne $target) {
+        $script:overlay.Invalidate()
+    }
+}
+
+function Show-OverlayWindow {
+    if (-not $script:overlay.Visible) {
+        $script:overlay.Show()
+        # Force a no-activate show regardless of WinForms internals (SW_SHOWNOACTIVATE = 4), so the
+        # overlay never becomes foreground and the dictation target keeps focus.
+        try { [Win32Input]::ShowWindow($script:overlay.Handle, 4) | Out-Null } catch {}
+    }
+    if (-not $script:ovTimer.Enabled) { $script:ovTimer.Start() }
+}
+
+# Enter a live state ('Listening' clears any prior text; 'Finalizing' keeps the last partial).
+function Show-Overlay([string]$state) {
+    if (-not $script:OverlayEnabled) { return }
+    Initialize-Overlay
+    if ($state -eq 'Listening') { $script:ovText = '' }
+    $script:ovState = $state
+    # Safety net: if no 'final' ever arrives (link dropped after stop, hotkey pressed while
+    # disconnected, …) the bar must not hang on "Transcribing…" forever. A real final overrides
+    # this the moment it lands. 'Listening' is held by the user, so it never auto-hides.
+    $script:ovHideAt        = if ($state -eq 'Finalizing') { [Environment]::TickCount + 10000 } else { 0 }
+    $script:ovOpacityTarget = $script:OV_OPACITY
+    Update-OverlayBounds
+    Show-OverlayWindow
+    $script:overlay.Invalidate()
+}
+
+# Update the running transcript from a partial result (ignored once finalising has completed).
+function Set-OverlayText([string]$text) {
+    if (-not $script:OverlayEnabled -or -not $script:overlay) { return }
+    if ($script:ovState -ne 'Listening' -and $script:ovState -ne 'Finalizing') { return }
+    $script:ovText = [string]$text
+    Update-OverlayBounds
+    $script:overlay.Invalidate()
+}
+
+function Set-OverlayFinal([string]$text) {
+    if (-not $script:OverlayEnabled) { return }
+    Initialize-Overlay
+    $script:ovState         = 'Final'
+    $script:ovText          = [string]$text
+    $script:ovOpacityTarget = $script:OV_OPACITY
+    $script:ovHideAt        = [Environment]::TickCount + 1500
+    Update-OverlayBounds
+    Show-OverlayWindow
+    $script:overlay.Invalidate()
+}
+
+# Brief neutral message (e.g. no speech captured) that fades on its own.
+function Set-OverlayInfo([string]$text) {
+    if (-not $script:OverlayEnabled) { return }
+    Initialize-Overlay
+    $script:ovState         = 'Info'
+    $script:ovText          = [string]$text
+    $script:ovOpacityTarget = $script:OV_OPACITY
+    $script:ovHideAt        = [Environment]::TickCount + 1400
+    Update-OverlayBounds
+    Show-OverlayWindow
+    $script:overlay.Invalidate()
+}
+
+function Set-OverlayError([string]$msg) {
+    if (-not $script:OverlayEnabled) { return }
+    Initialize-Overlay
+    $script:ovState         = 'Error'
+    $script:ovText          = [string]$msg
+    $script:ovOpacityTarget = $script:OV_OPACITY
+    $script:ovHideAt        = [Environment]::TickCount + 2500
+    Update-OverlayBounds
+    Show-OverlayWindow
+    $script:overlay.Invalidate()
+}
+
+# Begin an immediate fade-out (the ticker parks the window once hidden). Safe to call when the
+# overlay was never created or is already hidden.
+function Hide-Overlay {
+    if (-not $script:overlay) { return }
+    $script:ovHideAt        = 0
+    $script:ovOpacityTarget = 0.0
+    if (-not $script:ovTimer.Enabled) { $script:ovTimer.Start() }
+}
+
+# Pump the WinForms message loop for $ms so overlay timers (pulse/fade) tick, mirroring how the live
+# main loop drives them via Application.DoEvents. Used only by the -Preview dev mode.
+function Wait-Pump([int]$ms) {
+    $end = [Environment]::TickCount + $ms
+    while ([Environment]::TickCount -lt $end) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 30
+    }
+}
+
+# Dev-only: a scripted dictation that exercises the real overlay functions (no phone / no TCP).
+function Start-OverlayPreview {
+    $script:OverlayEnabled = $true
+    Write-Log 'Overlay preview: scripted dictation starting…' 'Cyan'
+    Show-Overlay 'Listening'
+    Wait-Pump 900
+    $acc = ''
+    foreach ($word in 'create a python class that reads a config file and validates each field'.Split(' ')) {
+        $acc = ($acc + ' ' + $word).Trim()
+        Set-OverlayText $acc
+        Wait-Pump 220
+    }
+    Show-Overlay 'Finalizing'
+    Wait-Pump 700
+    Set-OverlayFinal 'Create a Python class that reads a config file and validates each field.'
+    Wait-Pump 3200   # hold the final, then let it auto-fade and park
+    Write-Log 'Overlay preview: done.' 'Cyan'
+}
 
 # --- Transport -----------------------------------------------------------------
 $global:recvBuffer  = New-Object System.Text.StringBuilder
@@ -222,6 +649,8 @@ function Try-Connect {
     # complete lines behind $stream.DataAvailable.
     $global:writer = New-Object System.IO.StreamWriter($global:stream)
     $global:writer.AutoFlush = $true
+    $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (connected)"
+    Send-SetMic $script:MicPref   # sync the mic preference to the phone on (re)connect
     Write-Log "Connected to Android transport server at ${HOST_IP}:${PORT}" 'Green'
     return $true
 }
@@ -237,6 +666,7 @@ function Ensure-Connected {
         Write-Log "Connecting to Android transport server at ${HOST_IP}:${PORT} (auto-retrying with backoff)..." 'DarkYellow'
         $script:AnnouncedConnecting = $true
     }
+    $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (connecting...)"
     if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Connecting...' }
 
     if (Try-Connect) {
@@ -332,6 +762,7 @@ function Start-Dictation {
     }
     Set-ListeningState $true
     Send-HermesCommand 'start_listening'
+    Show-Overlay 'Listening'   # target window already captured above; overlay never takes focus
     Write-Log 'Listening started.' 'Red'
 }
 
@@ -339,6 +770,7 @@ function Stop-Dictation {
     if (-not $script:isListening) { return }
     Set-ListeningState $false
     Send-HermesCommand 'stop_listening'
+    Show-Overlay 'Finalizing'   # keep the last partial visible while the final transcript arrives
     Write-Log 'Listening stopped; awaiting transcript.' 'Yellow'
 }
 
@@ -347,18 +779,43 @@ function Process-HermesLine($line) {
     try {
         $msg = $line | ConvertFrom-Json
         switch ($msg.type) {
-            'partial' { Write-Log "  partial: $($msg.text)" 'DarkGray' }
+            'partial' {
+                Write-Log "  partial: $($msg.text)" 'DarkGray'
+                Set-OverlayText ([string]$msg.text)   # live running transcript in the HUD
+            }
             'final' {
                 $ftext = $msg.text
                 Write-Log "Transcript: $ftext" 'Green'
                 if ($ftext -and $ftext.Trim().Length -gt 0) {
+                    Set-OverlayFinal ($ftext.Trim())   # confirm the produced text before injecting it
                     # Append a trailing space so consecutive dictations stay separated.
                     Set-WindowsTextClipboard ($ftext.TrimEnd() + ' ')
                     Start-Sleep -Milliseconds 100
                     Send-Win32Paste
+                } else {
+                    Set-OverlayInfo 'No speech detected'
                 }
             }
-            'error'     { Write-Log "Speech error: $($msg.message) (Code: $($msg.code))" 'Red' }
+            'error'     {
+                Write-Log "Speech error: $($msg.message) (Code: $($msg.code))" 'Red'
+                Set-OverlayError ([string]$msg.message)
+            }
+            'status'    {
+                # Diagnostics from the phone: which mic is engaged, whether audio was detected, etc.
+                if ($msg.mic) {
+                    $micLabel = [string]$msg.mic
+                    if ($msg.device) { $micLabel = "$micLabel ($($msg.device))" }
+                    $script:itemMic.Text = "Mic: $micLabel"
+                }
+                switch ([string]$msg.event) {
+                    'speech_detected' { $script:itemAudio.Text = 'Audio: detected' }
+                    'no_speech'       { $script:itemAudio.Text = 'Audio: none captured' }
+                    'mic_fallback'    { $script:itemAudio.Text = 'Audio: BT silent, using built-in'; $script:itemMic.Text = 'Mic: builtin' }
+                    'mic'             { $script:itemAudio.Text = 'Audio: -' }
+                }
+                $detail = if ($msg.detail) { [string]$msg.detail } else { [string]$msg.event }
+                Write-Log "Diagnostic: $detail" 'DarkCyan'
+            }
             'heartbeat' { }  # keep-alive; no action
         }
     } catch { }
@@ -374,6 +831,16 @@ Write-Log '============================================================' 'Cyan'
 # The connection is established (and re-established) non-blocking inside the main loop via
 # Ensure-Connected, so the tray appears and stays responsive even when the phone is not yet
 # reachable -- no blocking connect loop at startup.
+
+# Dev preview mode: drive the overlay through a scripted dictation, then exit without the tray loop.
+if ($Preview) {
+    Start-OverlayPreview
+    try { if ($script:ovTimer) { $script:ovTimer.Stop(); $script:ovTimer.Dispose() } } catch {}
+    try { if ($script:overlay) { $script:overlay.Dispose() } } catch {}
+    try { $script:notify.Visible = $false; $script:notify.Dispose() } catch {}
+    return
+}
+
 $wasKeyPressed = $false
 
 # --- Main event loop -----------------------------------------------------------
@@ -424,8 +891,10 @@ while (-not $script:ShouldExit) {
         } catch {
             Write-Log "Disconnected: $($_.Exception.Message) Will reconnect." 'Red'
             Close-Transport
+            $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (disconnected)"
             [void]$global:recvBuffer.Clear()
             Set-ListeningState $false
+            Hide-Overlay   # a dropped link mid-dictation yields no transcript; clear the HUD
             # Reconnect promptly with a fresh backoff; Ensure-Connected does it non-blocking.
             $script:BackoffMs = $script:BackoffMinMs
             $script:NextConnectAt = 0
@@ -439,6 +908,11 @@ while (-not $script:ShouldExit) {
 # --- Cleanup -------------------------------------------------------------------
 Write-Log 'Shutting down Hermes companion.' 'Gray'
 try { $script:notify.Visible = $false; $script:notify.Dispose() } catch {}
+try { if ($script:ovTimer)     { $script:ovTimer.Stop(); $script:ovTimer.Dispose() } } catch {}
+try { if ($script:overlay)     { $script:overlay.Close(); $script:overlay.Dispose() } } catch {}
+try { if ($script:ovFont)      { $script:ovFont.Dispose() } } catch {}
+try { if ($script:ovLabelFont) { $script:ovLabelFont.Dispose() } } catch {}
+try { if ($script:ovMeasureG)  { $script:ovMeasureG.Dispose() } } catch {}
 try { if ($global:writer) { $global:writer.Dispose() } } catch {}
 try { if ($global:stream) { $global:stream.Dispose() } } catch {}
 try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}

@@ -178,6 +178,21 @@ windows/
    - Backup Strategy: Windows Clipboard (`OpenClipboard` -> `SetClipboardData` -> `Ctrl+V` key sequence) for bulk final text injection.
 3. **Floating HUD Overlay**: Minimalist desktop visualizer indicating system states (`DISCONNECTED`, `READY`, `LISTENING`, `PROCESSING`, `ERROR`).
 
+**Dictation overlay realisation (REQ-FUNC-014).** The HUD listed above (originally a PyQt/WinUI
+placeholder) is realised in the native tray client `windows/hermes_hotkey.ps1` using WinForms — the
+same toolkit that already draws the tray icon and menu — so no additional runtime or packaging
+dependency is introduced. It renders a dark, semi-transparent bar at the bottom-centre of the
+screen that appears while the hotkey is held: a pulsing indicator plus the **live running partial
+transcript** as words are detected, transitioning to a green **final-transcript confirmation** at
+the moment the text is injected, then fading out (and to an ERROR presentation on an `error` frame).
+Crucially, the overlay window carries the extended styles
+`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT` and is
+shown with `SW_SHOWNOACTIVATE`, so it stays above the editor, is click-through, and **never becomes
+the foreground window** — leaving the captured injection target (`$targetHwnd`) and paste sequence
+undisturbed. It consumes the existing `partial` / `final` / `error` frames already parsed in
+`Process-HermesLine`, so the protocol contract is unchanged. A tray toggle ("Show dictation
+overlay"), persisted as `overlay` in `hermes.config.json`, allows it to be disabled.
+
 ---
 
 ### 5.2 Android Subsystem Architecture (`android/`)
@@ -374,7 +389,7 @@ Speech Output  -->  Pipeline Manager  -->  Formatting Filter  -->  Command Dispa
 | **M3** | Windows Hotkey Handler | Low-level keyboard hook triggering `start_listening` / `stop_listening` commands. |
 | **M4** | Live Partial Streaming | Real-time text transmission and UI HUD status updates on Windows. |
 | **M5** | Text Injection | Active window injection using Win32 `SendInput()` & Clipboard fallback. |
-| **M6** | Desktop HUD Overlay | Semi-transparent status bar for recording indicators and error messaging. |
+| **M6** | Desktop HUD Overlay | Semi-transparent status bar for recording indicators and error messaging. **Realised** as a non-focus-stealing WinForms overlay in `windows/hermes_hotkey.ps1` (REQ-FUNC-014): bottom-centre bar showing the live partial transcript and final-transcript confirmation. |
 | **M7** | Configuration & Settings | Settings panel for keybindings, engine selection, and formatting rules. |
 | **M8** | Installer & Release Packaging | Single-click Windows `.msi`/`.exe` installer + Android `.apk` build. |
 

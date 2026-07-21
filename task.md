@@ -37,5 +37,20 @@ Governance: skill is REQ-exempt (dev tooling); the two fixes follow AGENTS.md Ru
 - [x] D4. Build (`assembleDebug`) + install new APK + relaunch (serving on ncm0, prefer_offline=true)
 - [ ] D5. Live empirical verify with the Bluetooth headset (Rule 9) — pending user test
 
+## Track E — Windows dictation overlay / HUD (REQ-FUNC-014) [user request]
+Plan: realise the `windows/overlay` HUD (HLD §5.1, M6) — a non-focus-stealing bottom-centre bar
+showing the live listening indicator, the running partial transcript, and the final transcript at
+injection. Realised in the WinForms tray client; reuses existing partial/final/error frames (no
+protocol change). Governance: RTM/HLD updated (Rules 1/3/4); no contract/fixture change (Rule 5
+steps 3–4 = no change needed, documented).
+- [x] E1. RTM REQ-FUNC-014 + notes on REQ-FUNC-005 / REQ-FUNC-009 (overlay now realised)
+- [x] E2. HLD §5.1 overlay-realisation note + Milestone M6 marked realised
+- [x] E3. `windows/hermes_hotkey.ps1`: `Hermes.OverlayForm` C# subclass (no-activate / tool-window / topmost / layered / transparent) via `Add-Type`
+- [x] E4. `windows/hermes_hotkey.ps1`: `Initialize-Overlay` + `Show-Overlay` / `Set-OverlayText` / `Set-OverlayFinal` / `Set-OverlayInfo` / `Set-OverlayError` / `Hide-Overlay` / `Update-OverlayBounds` (paint dot + state + wrapped transcript; pulse + fade timer)
+- [x] E5. Wire overlay into `Start-Dictation`, `Stop-Dictation`, `Process-HermesLine` (partial/final/error), disconnect path, and cleanup
+- [x] E6. Tray toggle "Show dictation overlay" + `overlay` field in `Load-Config` / `Save-Config` (default true); guard all overlay calls on `$script:OverlayEnabled`
+- [x] E7. Verify: Python unit + protocol suites green (17 tests OK; fixtures pass); RTM lists REQ-FUNC-014. Added `-Preview` dev mode (phone-free overlay self-test) reusing the real overlay functions.
+- [ ] E8. (Manual, Windows host — `pwsh` unavailable under WSL) run `hermes_hotkey.ps1 -Preview` and a live PTT; confirm bar shows/grows/finalises, paste still lands in the correct window, focus never stolen, toggle works
+
 Note: canonical test invocation is `python3 -m unittest discover -s tests -p "test_*.py"` (all 13 pass).
 Discovering from `-s tests/unit` fails spuriously — `tests/unit/windows/` shadows the real top-level `windows/` package. Use `-s tests`.
