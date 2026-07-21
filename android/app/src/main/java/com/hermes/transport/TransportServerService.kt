@@ -84,6 +84,13 @@ class TransportServerService : Service() {
         // USB cable/function state. This action is a sticky broadcast that is only ever delivered to
         // runtime-registered receivers, never to manifest-declared ones.
         private const val ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE"
+
+        /**
+         * Whether [name] (already lower-cased) is a USB-tethering network interface
+         * (RNDIS / NCM / usb*). Pure and framework-free so it is unit-testable. (REQ-FUNC-008)
+         */
+        internal fun isUsbTetherInterfaceName(name: String): Boolean =
+            name.startsWith("usb") || name.startsWith("rndis") || name.startsWith("ncm")
     }
 
     override fun onCreate() {
@@ -188,7 +195,7 @@ class TransportServerService : Service() {
         return try {
             NetworkInterface.getNetworkInterfaces()?.toList()?.firstNotNullOfOrNull { nif ->
                 val name = nif.name?.lowercase() ?: return@firstNotNullOfOrNull null
-                val looksUsb = name.startsWith("usb") || name.startsWith("rndis") || name.startsWith("ncm")
+                val looksUsb = isUsbTetherInterfaceName(name)
                 if (!looksUsb || !nif.isUp) return@firstNotNullOfOrNull null
                 nif.inetAddresses?.toList()?.firstOrNull { addr ->
                     addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress
@@ -204,6 +211,10 @@ class TransportServerService : Service() {
 
     @Synchronized
     private fun reconcile() {
+        // Re-detect the USB tether on every reconcile so a missed ACTION_USB_STATE broadcast can't
+        // leave the listener stuck idle: the frequent, reliable Wi-Fi/cellular network callbacks
+        // that also drive reconcile() then pick the tether back up on their own. (REQ-FUNC-012)
+        refreshUsbState()
         val sel = TransportPrefs.read(this)
         val serveNetwork = (sel.wifi && wifiAvailable) || (sel.mobile && cellularAvailable)
         val usbAddr = usbAddress

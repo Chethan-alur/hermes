@@ -52,5 +52,24 @@ steps 3–4 = no change needed, documented).
 - [x] E7. Verify: Python unit + protocol suites green (17 tests OK; fixtures pass); RTM lists REQ-FUNC-014. Added `-Preview` dev mode (phone-free overlay self-test) reusing the real overlay functions.
 - [ ] E8. (Manual, Windows host — `pwsh` unavailable under WSL) run `hermes_hotkey.ps1 -Preview` and a live PTT; confirm bar shows/grows/finalises, paste still lands in the correct window, focus never stolen, toggle works
 
+## Track F — Transcript integrity + durable transport (REQ-FUNC-006, REQ-FUNC-012) [live debugging]
+Plan: two Android fixes found via live use, fixed contract-first, one APK rebuild.
+- [x] F1. RTM notes: REQ-FUNC-006 (transcript survives mid-utterance pauses), REQ-FUNC-012 (reconcile self-heals stale USB state)
+- [x] F2. `SpeechEngine.kt`: pure `partialContinues(prev,next)` helper + commit-on-regression in `onPartialResults` (recognizer resets partial at pauses -> commit prior chunk so pre-pause speech is not lost)
+- [x] F3. `TransportServerService.kt`: `reconcile()` calls `refreshUsbState()` first (self-heal missed ACTION_USB_STATE); extract pure `isUsbTetherInterfaceName()`
+- [x] F4. JUnit tests: `PartialAccumulationTest` 6/6 + `UsbTetherInterfaceTest` 2/2 (BUILD SUCCESSFUL)
+- [x] F5. `task android:build` + `adb install -r` OK; app relaunched, listener bound, tray reconnected
+- [ ] F6. Live verify: paused PTT dictation preserves all speech; USB replug -> listener + route both recover without app restart
+
+## Track G — On-device transcript proofreading (Gemini Nano / ML Kit GenAI) (REQ-FUNC-015) [spike]
+Plan: clean grammar/punctuation on the final transcript on-device before delivery; best-effort,
+falls back to raw text on unavailable/timeout/error. Pixel 8 has AICore (Gemini Nano) present.
+- [x] G1. RTM REQ-FUNC-015
+- [x] G2. `app/build.gradle.kts`: add `com.google.mlkit:genai-proofreading:1.0.0-beta1` (+ `-Xskip-metadata-version-check`)
+- [x] G3. `TranscriptProofreader.kt`: wrap Proofreader (VOICE/ENGLISH); ListenableFuture checkFeatureStatus + downloadFeature; runInference with timeout + fallback to original
+- [x] G4. `SpeechEngine.kt`: `KEY_PROOFREAD` pref (default on); `emitFinal` -> `deliverFinal`; close on destroy. When feature unavailable, proofread() short-circuits (no added latency)
+- [x] G5. Build OK; unit tests 12/12; `adb install -r` OK, app relaunched, listener bound
+- [ ] G6. BLOCKED: on THIS Pixel 8, AICore reports the Proofreading GenAI feature (614) `FEATURE_NOT_FOUND` (error 606) — not provisioned on this device. Integration falls back to raw text (dictation unaffected, zero added latency). Would activate automatically if a device/AICore build offers the feature (Pixel 8 Pro / Pixel 9-class). Decision pending: provision attempt vs cloud LLM vs accept.
+
 Note: canonical test invocation is `python3 -m unittest discover -s tests -p "test_*.py"` (all 13 pass).
 Discovering from `-s tests/unit` fails spuriously — `tests/unit/windows/` shadows the real top-level `windows/` package. Use `-s tests`.

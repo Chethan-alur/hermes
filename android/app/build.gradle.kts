@@ -28,6 +28,8 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // genai-proofreading is built with a newer Kotlin; allow the 1.9 compiler to read its metadata.
+        freeCompilerArgs = freeCompilerArgs + "-Xskip-metadata-version-check"
     }
 }
 
@@ -37,6 +39,9 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.json:json:20231013")
+
+    // On-device transcript proofreading via Gemini Nano / AICore (REQ-FUNC-015).
+    implementation("com.google.mlkit:genai-proofreading:1.0.0-beta1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

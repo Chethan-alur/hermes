@@ -73,6 +73,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var firstReadyOfSession = false
     private var toneGen: ToneGenerator? = null
+    private var proofreader: TranscriptProofreader? = null
     private var audioManager: AudioManager? = null
     @Volatile private var routedToCommDevice = false
 
@@ -94,6 +95,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         const val PREFS = "hermes_prefs"
         const val KEY_PREFER_OFFLINE = "prefer_offline"
         const val KEY_MIC_PREF = "mic_preference"   // "auto" | "builtin" | "bluetooth"
+        const val KEY_PROOFREAD = "proofread"       // on-device Gemini Nano cleanup (REQ-FUNC-015)
+
+        // Cap the on-device proofreading wait so a slow/absent model never stalls injection; on
+        // timeout the raw transcript is delivered instead. (REQ-FUNC-015)
+        private const val PROOFREAD_TIMEOUT_MS = 2500L
 
         private const val RESTART_MS = 150L
         private const val BUSY_BACKOFF_MS = 450L
@@ -131,12 +137,36 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             availableTypes.contains(AudioDeviceInfo.TYPE_BLUETOOTH_SCO) -> AudioDeviceInfo.TYPE_BLUETOOTH_SCO
             else -> null
         }
+
+        private val WHITESPACE = Regex("\\s+")
+        private fun wordCount(s: String): Int = s.trim().split(WHITESPACE).count { it.isNotEmpty() }
+
+        /**
+         * Whether partial hypothesis [next] continues [prev] within the same spoken chunk, versus
+         * the recognizer resetting its hypothesis at a mid-utterance pause (some on-device
+         * recognizers emit an empty/shorter unrelated partial and rebuild, instead of committing the
+         * completed chunk via onResults). Returns false when [next] is a reset/new chunk -- the
+         * signal to commit [prev] into the accumulated transcript so pre-pause speech is not lost.
+         * Pure and framework-free so it is unit-testable. (REQ-FUNC-006)
+         */
+        internal fun partialContinues(prev: String, next: String): Boolean {
+            val p = prev.trim()
+            val n = next.trim()
+            if (p.isEmpty()) return true          // nothing buffered yet; [next] just starts a chunk
+            if (n.isEmpty()) return false         // hypothesis reset to empty -> [prev] chunk is done
+            if (n.startsWith(p) || p.startsWith(n)) return true  // growth or in-chunk refine/backtrack
+            // Unrelated text: a new chunk only if words were dropped (reset); a same/longer-length
+            // re-hypothesis of the same speech just replaces the guess (continuation, no commit).
+            return wordCount(n) >= wordCount(p)
+        }
     }
 
     init {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.e(TAG, "Speech recognition unavailable on this device.")
         }
+        // Warm up the on-device proofreader so its model is ready before the first final. (REQ-FUNC-015)
+        proofreader = TranscriptProofreader(context)
         // Recognizer is created lazily in ensureRecognizer() on first use.
     }
 
@@ -188,6 +218,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         recognizer = null
         try { toneGen?.release() } catch (_: Exception) {}
         toneGen = null
+        try { proofreader?.close() } catch (_: Exception) {}
+        proofreader = null
         listener = null
         segmentRunning = false
     }
@@ -196,6 +228,10 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
     private fun prefersOffline(): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PREFER_OFFLINE, true)
+
+    /** Whether to clean the final transcript on-device before delivery. (REQ-FUNC-015) */
+    private fun proofreadEnabled(): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PROOFREAD, true)
 
     /** User's microphone choice: "auto" (default), "builtin" (phone), or "bluetooth". */
     private fun micPreference(): String =
@@ -404,8 +440,24 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         Log.i(TAG, "Stopped cue played.")
         playCue(CUE_STOP_TONE, CUE_STOP_MS)
         listener?.invoke(SpeechEvent.ListeningStopped)
-        listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
         clearBluetoothRouting()
+        deliverFinal(text)
+    }
+
+    /**
+     * Deliver the final transcript, first cleaning it on-device with the proofreader when enabled
+     * and available; on any failure/timeout the raw text is delivered unchanged. (REQ-FUNC-015)
+     */
+    private fun deliverFinal(text: String) {
+        val pr = proofreader
+        if (text.isNotEmpty() && proofreadEnabled() && pr != null) {
+            pr.proofread(text, PROOFREAD_TIMEOUT_MS) { cleaned ->
+                if (cleaned != text) Log.i(TAG, "Proofread: \"$text\" -> \"$cleaned\"")
+                listener?.invoke(SpeechEvent.FinalResult(cleaned, 1.0f))
+            }
+        } else {
+            listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
+        }
     }
 
     /** ERROR_RECOGNIZER_BUSY / ERROR_CLIENT: back off, recreate, and eventually give up. */
@@ -517,7 +569,12 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
                 val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
                     markSpeechHeard()
-                    lastPartial = matches[0]
+                    val next = matches[0]
+                    // If the recognizer reset its partial hypothesis at a mid-utterance pause
+                    // (instead of committing the chunk via onResults), fold the previous partial
+                    // into the accumulated transcript so pre-pause speech survives. (REQ-FUNC-006)
+                    if (!partialContinues(lastPartial, next)) flushPartial()
+                    lastPartial = next
                     val prefix = if (accumulated.isNotEmpty()) accumulated.toString() + " " else ""
                     sequenceCounter++
                     listener?.invoke(SpeechEvent.PartialResult((prefix + lastPartial).trim(), sequenceCounter))
