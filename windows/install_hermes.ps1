@@ -21,8 +21,19 @@ New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 # fixes a stale hotkey (e.g. an old [123]=F12) without clobbering the connection setting.
 Copy-Item (Join-Path $srcDir 'hermes_hotkey.ps1')   (Join-Path $destDir 'hermes_hotkey.ps1')   -Force
 Copy-Item (Join-Path $srcDir 'hermes_launcher.vbs') (Join-Path $destDir 'hermes_launcher.vbs') -Force
+$srcCfg   = Join-Path $srcDir  'hermes.config.json'
 $destCfg  = Join-Path $destDir 'hermes.config.json'
 $destHost = '127.0.0.1'; $destPort = 9999
+# Default the connection to whatever the source (repo) config specifies -- e.g. the phone's
+# current USB-tether IP -- so a fresh install does not silently fall back to 127.0.0.1 and hang.
+if (Test-Path $srcCfg) {
+    try {
+        $srcJson = Get-Content $srcCfg -Raw | ConvertFrom-Json
+        if ($srcJson.host) { $destHost = [string]$srcJson.host }
+        if ($srcJson.port) { $destPort = [int]$srcJson.port }
+    } catch {}
+}
+# A prior installation's setting then wins, so reinstalling never clobbers a host the user changed.
 if (Test-Path $destCfg) {
     try {
         $existing = Get-Content $destCfg -Raw | ConvertFrom-Json

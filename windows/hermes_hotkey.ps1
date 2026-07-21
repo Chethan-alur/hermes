@@ -176,20 +176,79 @@ Update-ModeChecks
 $global:recvBuffer  = New-Object System.Text.StringBuilder
 $readByteBuffer     = New-Object 'byte[]' 4096
 
-function Connect-Transport {
+# Reconnect/backoff state (see Ensure-Connected). Mirrors windows/transport/tcp_client.py:
+# bounded connect timeout + capped exponential backoff, so an unreachable phone never freezes
+# the tray.
+$script:ConnectTimeoutMs    = 3000
+$script:BackoffMinMs        = 1000
+$script:BackoffMaxMs        = 30000
+$script:BackoffMs           = $script:BackoffMinMs
+$script:NextConnectAt       = 0
+$script:AnnouncedConnecting = $false
+
+function Close-Transport {
+    try { if ($global:writer)    { $global:writer.Dispose() } }  catch {}
+    try { if ($global:stream)    { $global:stream.Dispose() } }  catch {}
+    try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}
+    $global:writer = $null; $global:stream = $null; $global:tcpClient = $null
+}
+
+function Try-Connect {
+    # Non-blocking connect bounded by $script:ConnectTimeoutMs. Unlike the blocking
+    # TcpClient(host, port) constructor -- which parks the WinForms message pump for the full
+    # ~20s OS timeout on an unreachable host (the original tray "freeze") -- this drives
+    # BeginConnect and pumps DoEvents while it waits, so the tray stays responsive.
+    $client = New-Object System.Net.Sockets.TcpClient
+    $client.NoDelay = $true
     try {
-        $global:tcpClient = New-Object System.Net.Sockets.TcpClient($HOST_IP, $PORT)
-        $global:stream = $global:tcpClient.GetStream()
-        # Only a StreamWriter for OUTBOUND commands. Inbound data is read raw off the
-        # socket (see the drain loop): a StreamReader reads ahead into its own buffer and
-        # would strand complete lines behind $stream.DataAvailable.
-        $global:writer = New-Object System.IO.StreamWriter($global:stream)
-        $global:writer.AutoFlush = $true
-        Write-Log "Connected to Android transport server at ${HOST_IP}:${PORT}" 'Green'
-        return $true
+        $iar = $client.BeginConnect($HOST_IP, $PORT, $null, $null)
+        $deadline = [Environment]::TickCount + $script:ConnectTimeoutMs
+        while (-not $iar.AsyncWaitHandle.WaitOne(50)) {
+            [System.Windows.Forms.Application]::DoEvents()
+            if ($script:ShouldExit)                     { $client.Close(); return $false }
+            if ([Environment]::TickCount -ge $deadline) { $client.Close(); return $false }
+        }
+        $client.EndConnect($iar)   # throws if the connection attempt failed
     } catch {
+        try { $client.Close() } catch {}
         return $false
     }
+    if (-not $client.Connected) { try { $client.Close() } catch {}; return $false }
+
+    $global:tcpClient = $client
+    $global:stream    = $client.GetStream()
+    # Only a StreamWriter for OUTBOUND commands. Inbound data is read raw off the socket
+    # (see the drain loop): a StreamReader reads ahead into its own buffer and would strand
+    # complete lines behind $stream.DataAvailable.
+    $global:writer = New-Object System.IO.StreamWriter($global:stream)
+    $global:writer.AutoFlush = $true
+    Write-Log "Connected to Android transport server at ${HOST_IP}:${PORT}" 'Green'
+    return $true
+}
+
+function Ensure-Connected {
+    # Called once per main-loop iteration. Non-blocking: returns immediately while backing off,
+    # and makes at most one bounded connect attempt per interval, so an unreachable phone never
+    # freezes the tray. Backoff grows to $script:BackoffMaxMs and resets on success.
+    if ($global:tcpClient -and $global:tcpClient.Connected) { return $true }
+    if ([Environment]::TickCount -lt $script:NextConnectAt) { return $false }
+
+    if (-not $script:AnnouncedConnecting) {
+        Write-Log "Connecting to Android transport server at ${HOST_IP}:${PORT} (auto-retrying with backoff)..." 'DarkYellow'
+        $script:AnnouncedConnecting = $true
+    }
+    if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Connecting...' }
+
+    if (Try-Connect) {
+        $script:BackoffMs = $script:BackoffMinMs
+        $script:AnnouncedConnecting = $false
+        if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Ready' }
+        return $true
+    }
+
+    $script:NextConnectAt = [Environment]::TickCount + $script:BackoffMs
+    $script:BackoffMs = [Math]::Min($script:BackoffMs * 2, $script:BackoffMaxMs)
+    return $false
 }
 
 function Send-HermesCommand($cmdName) {
@@ -312,17 +371,16 @@ Write-Log "Mode: $script:Mode   Hotkey VK: $($VK_LIST -join ', ') (default 163 =
 Write-Log 'Right-click the tray icon to switch mode or exit.' 'Gray'
 Write-Log '============================================================' 'Cyan'
 
-while (-not (Connect-Transport)) {
-    if ($script:ShouldExit) { break }
-    [System.Windows.Forms.Application]::DoEvents()
-    Start-Sleep -Seconds 2
-}
-
+# The connection is established (and re-established) non-blocking inside the main loop via
+# Ensure-Connected, so the tray appears and stays responsive even when the phone is not yet
+# reachable -- no blocking connect loop at startup.
 $wasKeyPressed = $false
 
 # --- Main event loop -----------------------------------------------------------
 while (-not $script:ShouldExit) {
     [System.Windows.Forms.Application]::DoEvents()   # service tray menu events
+
+    $connected = Ensure-Connected                    # non-blocking connect/reconnect with backoff
 
     # Hotkey edge detection
     $isKeyPressed = $false
@@ -340,39 +398,38 @@ while (-not $script:ShouldExit) {
     }
     $wasKeyPressed = $isKeyPressed
 
-    # Non-blocking socket drain with disconnect detection + reconnect.
-    try {
-        $sock = $global:tcpClient.Client
-        if ($sock.Poll(0, [System.Net.Sockets.SelectMode]::SelectRead) -and $global:tcpClient.Available -eq 0) {
-            throw 'Remote server closed the connection.'
-        }
-        while ($global:tcpClient.Available -gt 0) {
-            $count = $global:stream.Read($readByteBuffer, 0, $readByteBuffer.Length)
-            if ($count -le 0) { throw 'Remote server closed the connection.' }
-            [void]$global:recvBuffer.Append([System.Text.Encoding]::UTF8.GetString($readByteBuffer, 0, $count))
-        }
-        $buffered = $global:recvBuffer.ToString()
-        $nl = $buffered.IndexOf("`n")
-        while ($nl -ge 0) {
-            $lineText = $buffered.Substring(0, $nl).TrimEnd("`r")
-            $buffered = $buffered.Substring($nl + 1)
-            Process-HermesLine $lineText
+    # Non-blocking socket drain with disconnect detection. Reconnect is handled by
+    # Ensure-Connected on later iterations (with backoff) -- never by a blocking loop.
+    if ($connected) {
+        try {
+            $sock = $global:tcpClient.Client
+            if ($sock.Poll(0, [System.Net.Sockets.SelectMode]::SelectRead) -and $global:tcpClient.Available -eq 0) {
+                throw 'Remote server closed the connection.'
+            }
+            while ($global:tcpClient.Available -gt 0) {
+                $count = $global:stream.Read($readByteBuffer, 0, $readByteBuffer.Length)
+                if ($count -le 0) { throw 'Remote server closed the connection.' }
+                [void]$global:recvBuffer.Append([System.Text.Encoding]::UTF8.GetString($readByteBuffer, 0, $count))
+            }
+            $buffered = $global:recvBuffer.ToString()
             $nl = $buffered.IndexOf("`n")
-        }
-        [void]$global:recvBuffer.Clear()
-        [void]$global:recvBuffer.Append($buffered)
-    } catch {
-        Write-Log "Disconnected: $($_.Exception.Message) Reconnecting..." 'Red'
-        try { if ($global:writer) { $global:writer.Dispose() } } catch {}
-        try { if ($global:stream) { $global:stream.Dispose() } } catch {}
-        try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}
-        $global:writer = $null
-        [void]$global:recvBuffer.Clear()
-        Set-ListeningState $false
-        while (-not (Connect-Transport)) {
-            if ($script:ShouldExit) { break }
-            [System.Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Seconds 2
+            while ($nl -ge 0) {
+                $lineText = $buffered.Substring(0, $nl).TrimEnd("`r")
+                $buffered = $buffered.Substring($nl + 1)
+                Process-HermesLine $lineText
+                $nl = $buffered.IndexOf("`n")
+            }
+            [void]$global:recvBuffer.Clear()
+            [void]$global:recvBuffer.Append($buffered)
+        } catch {
+            Write-Log "Disconnected: $($_.Exception.Message) Will reconnect." 'Red'
+            Close-Transport
+            [void]$global:recvBuffer.Clear()
+            Set-ListeningState $false
+            # Reconnect promptly with a fresh backoff; Ensure-Connected does it non-blocking.
+            $script:BackoffMs = $script:BackoffMinMs
+            $script:NextConnectAt = 0
+            $script:AnnouncedConnecting = $false
         }
     }
 
