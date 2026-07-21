@@ -29,6 +29,33 @@ task windows:installer:build
 
 Output: **`windows/dist/ProjectHermes-Setup.exe`**.
 
+## Alternative: self-extracting Setup.exe (IExpress — no Inno Setup)
+
+If you do not have Inno Setup, you can build a self-extracting `Setup.exe` using **IExpress**,
+which ships with every Windows install. It bundles `install_hermes.ps1` and its payload files
+(`hermes_hotkey.ps1`, `hermes_launcher.vbs`, `hermes.config.json`); when run, it extracts them to a
+temporary folder and executes `install_hermes.ps1` unchanged.
+
+From a **Windows** shell at the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\installer\build_sfx.ps1
+```
+
+Or via Task:
+
+```bash
+task windows:installer:sfx
+```
+
+Output: **`windows/dist/ProjectHermes-Setup.exe`** (same location as the Inno build).
+
+The build recipe is `windows/installer/hermes.sed` (an IExpress directive with a `__STAGEDIR__`
+placeholder); `build_sfx.ps1` stages the payload into a local temp folder — IExpress cannot read
+sources over a UNC `\\wsl$` path — substitutes the placeholder, invokes `iexpress.exe /N /Q`, and
+copies the result into `windows/dist`. Trade-offs versus the Inno build: no Add/Remove-Programs
+uninstaller entry and a plainer extraction UI; to remove it, use `windows/uninstall_hermes.ps1`.
+
 ## Install / run
 Double-click `ProjectHermes-Setup.exe` and follow the wizard (tick *"Start Project Hermes now"*
 on the last page). It will:

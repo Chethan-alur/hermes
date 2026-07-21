@@ -108,6 +108,11 @@ tasks:
     cmds:
       - powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "ISCC.exe windows\installer\hermes.iss"
 
+  windows:installer:sfx:
+    desc: "Build a self-extracting Setup.exe with IExpress (built into Windows; no Inno Setup needed). Wraps install_hermes.ps1. Output: windows/dist/ProjectHermes-Setup.exe. See windows/installer/README.md"
+    cmds:
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows\installer\build_sfx.ps1
+
   test:
     desc: Run protocol schema validation and unit tests
     cmds:
