@@ -1,0 +1,7 @@
+{
+  "version": "1.0",
+  "type": "error",
+  "code": "INSUFFICIENT_PERMISSIONS",
+  "message": "Microphone permission was not granted.",
+  "timestamp": 1773945367000
+}

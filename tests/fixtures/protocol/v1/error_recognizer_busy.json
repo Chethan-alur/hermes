@@ -1,0 +1,7 @@
+{
+  "version": "1.0",
+  "type": "error",
+  "code": "RECOGNIZER_BUSY",
+  "message": "Speech recognizer is busy; retry shortly.",
+  "timestamp": 1773945366000
+}

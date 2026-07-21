@@ -74,6 +74,9 @@ def validate_all(repo_root: Path) -> bool:
         ("partial_sample.json", "partial.schema.json"),
         ("final_sample.json", "final.schema.json"),
         ("error_sample.json", "error.schema.json"),
+        ("error_network_timeout.json", "error.schema.json"),
+        ("error_recognizer_busy.json", "error.schema.json"),
+        ("error_insufficient_permissions.json", "error.schema.json"),
         ("heartbeat_sample.json", "heartbeat.schema.json"),
     ]
 

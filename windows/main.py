@@ -58,12 +58,23 @@ def read_key_nonblocking():
 
 
 class HermesWindowsDaemon:
-    def __init__(self, host: str = "127.0.0.1", port: int = 9999):
+    # Human-readable labels for the common Win32 virtual-key codes we ship.
+    _HOTKEY_LABELS = {"163": "Right Ctrl", "170": "Search", "183": "Calculator", "f12": "F12"}
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 9999, hotkey: str = "163"):
+        self.hotkey = str(hotkey)
+        self.hotkey_label = self._HOTKEY_LABELS.get(self.hotkey, self.hotkey)
         self.injector = TextInjector()
-        self.transport = TCPTransportClient(host=host, port=port, on_message_callback=self.on_protocol_message)
-        self.hotkey_manager = HotkeyManager(on_command_callback=self.send_command, hotkey_name="f12")
+        self.transport = TCPTransportClient(
+            host=host,
+            port=port,
+            on_message_callback=self.on_protocol_message,
+            on_state_change=self.on_transport_state,
+        )
+        self.hotkey_manager = HotkeyManager(on_command_callback=self.send_command, hotkey_name=self.hotkey)
         self.running = False
         self.is_listening_toggle = False
+        self.transport_state = TCPTransportClient.ConnectionState.DISCONNECTED
 
     def start(self):
         logger.info("Initializing Project Hermes Windows Companion Client...")
@@ -76,7 +87,7 @@ class HermesWindowsDaemon:
         self.running = True
 
         if keyboard is not None:
-            logger.info("Hermes Companion running with global hotkey! Press/Hold 'F12' to dictate.")
+            logger.info(f"Hermes Companion running with global hotkey! Press/Hold '{self.hotkey_label}' to dictate.")
             try:
                 while self.running:
                     time.sleep(1.0)
@@ -138,8 +149,31 @@ class HermesWindowsDaemon:
         self.transport.stop()
         logger.info("Hermes Windows Companion stopped.")
 
+    def on_transport_state(self, state: str):
+        """Reflect the live transport state so the app never merely appears hung.
+
+        Logged once per transition (see TCPTransportClient state-transition logging)
+        rather than once per reconnect attempt.
+        """
+        self.transport_state = state
+        States = TCPTransportClient.ConnectionState
+        if state == States.CONNECTED:
+            logger.info(f"Transport connected to {self.transport.host}:{self.transport.port}; ready to dictate.")
+            print("🔗 Connected to phone. Ready to dictate.")
+        elif state == States.CONNECTING:
+            logger.info("Transport connecting to phone (auto-retrying in the background)...")
+            print("… Connecting to phone (retrying in the background; the app stays responsive)…")
+        elif state == States.DISCONNECTED:
+            logger.warning("Transport disconnected from phone; will reconnect automatically.")
+            print("⚠️ Disconnected from phone; reconnecting automatically…")
+
     def send_command(self, command_payload: dict):
-        logger.info(f"Dispatching command over persistent socket: {command_payload.get('command')}")
+        command = command_payload.get("command")
+        if self.transport_state != TCPTransportClient.ConnectionState.CONNECTED:
+            logger.warning(f"Cannot dispatch '{command}': phone not connected (state={self.transport_state}).")
+            print(f"⚠️ '{command}' ignored — phone not connected yet.")
+            return
+        logger.info(f"Dispatching command over persistent socket: {command}")
         self.transport.send_json(command_payload)
 
     def on_protocol_message(self, message: dict):
@@ -165,35 +199,46 @@ class HermesWindowsDaemon:
             print(f"\n❌ [ERROR]: {code} - {msg}\n")
 
         elif msg_type == "heartbeat":
-            logger.info(f"[HEARTBEAT]: Android Server Ready (Status: {message.get('status')})")
+            # Emitted on connect and in reply to each liveness ping (~every 15s);
+            # kept at DEBUG so it does not flood the log.
+            logger.debug(f"[HEARTBEAT]: Android Server Ready (Status: {message.get('status')})")
 
 
 def load_config():
-    """Resolve the transport endpoint (host, port).
+    """Resolve the transport endpoint and Push-to-Talk hotkey (host, port, hotkey).
 
     Reads windows/hermes.config.json — the same file the PowerShell hotkey client uses — so both
     clients share one configuration source. For USB-tethering set ``host`` to the phone's tether IP
-    (e.g. 192.168.42.129); for Wi-Fi/mobile over WireGuard set it to the phone's WireGuard IP. The
-    environment variables HERMES_HOST / HERMES_PORT override the file when present.
+    (e.g. 192.168.42.129); for Wi-Fi/mobile over WireGuard set it to the phone's WireGuard IP.
+
+    The ``hotkeys`` list holds Win32 virtual-key codes; its first entry is the active PTT key
+    (163 = Right Ctrl, the Project Hermes default per REQ-FUNC-003). The environment variables
+    HERMES_HOST / HERMES_PORT / HERMES_HOTKEY override the file when present.
     """
-    host, port = "127.0.0.1", 9999
+    host, port, hotkey = "127.0.0.1", 9999, "163"  # 163 = Right Ctrl (REQ-FUNC-003)
     config_path = Path(__file__).resolve().parent / "hermes.config.json"
     try:
         if config_path.exists():
             data = json.loads(config_path.read_text(encoding="utf-8"))
             host = str(data.get("host", host))
             port = int(data.get("port", port))
+            hk = data.get("hotkeys")
+            if isinstance(hk, list) and hk:
+                hotkey = str(hk[0])
+            elif isinstance(hk, (int, str)) and str(hk):
+                hotkey = str(hk)
     except Exception as e:
         logger.warning(f"Could not read {config_path.name}; using defaults ({host}:{port}). {e}")
     host = os.environ.get("HERMES_HOST", host)
     port = int(os.environ.get("HERMES_PORT", port))
-    return host, port
+    hotkey = os.environ.get("HERMES_HOTKEY", hotkey)
+    return host, port, hotkey
 
 
 def main():
-    host, port = load_config()
-    logger.info(f"Target Android transport endpoint: {host}:{port}")
-    daemon = HermesWindowsDaemon(host=host, port=port)
+    host, port, hotkey = load_config()
+    logger.info(f"Target Android transport endpoint: {host}:{port} (PTT hotkey: {hotkey})")
+    daemon = HermesWindowsDaemon(host=host, port=port, hotkey=hotkey)
     daemon.start()
 
 

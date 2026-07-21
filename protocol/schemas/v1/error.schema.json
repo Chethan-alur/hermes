@@ -16,13 +16,21 @@
     },
     "code": {
       "type": "string",
+      "description": "Canonical error code. Enumerates every code emitted by the Android engine (see getErrorCodeString in TransportServerService.kt) plus the transport/permission codes used by the Windows and transport layers.",
       "enum": [
         "SPEECH_TIMEOUT",
         "AUDIO_RECORD_ERROR",
         "ENGINE_UNAVAILABLE",
         "PERMISSION_DENIED",
         "TRANSPORT_ERROR",
-        "UNKNOWN_ERROR"
+        "UNKNOWN_ERROR",
+        "NETWORK_TIMEOUT",
+        "NETWORK_ERROR",
+        "SERVER_ERROR",
+        "CLIENT_ERROR",
+        "NO_MATCH",
+        "RECOGNIZER_BUSY",
+        "INSUFFICIENT_PERMISSIONS"
       ]
     },
     "message": {

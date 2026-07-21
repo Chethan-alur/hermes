@@ -2,6 +2,7 @@ package com.hermes.speech
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
@@ -65,6 +66,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var firstReadyOfSession = false
     private var toneGen: ToneGenerator? = null
+    private var audioManager: AudioManager? = null
+    @Volatile private var routedToCommDevice = false
 
     companion object {
         private const val TAG = "AndroidSpeechEngine"
@@ -87,6 +90,21 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         private const val CUE_VOLUME = 80          // 0..100
         private const val CUE_START_MS = 150
         private const val CUE_STOP_MS = 120
+
+        // Give a just-engaged Bluetooth SCO/LE link a moment to come up before the first
+        // segment starts capturing, so the opening words are not clipped. (REQ-FUNC-013)
+        private const val SCO_WARMUP_MS = 400L
+
+        /**
+         * Preferred Bluetooth microphone type among the currently available communication-device
+         * types: LE-Audio headset first, then classic HFP/SCO, else null (use the built-in mic).
+         * Pure and framework-free so it is unit-testable. (REQ-FUNC-013)
+         */
+        internal fun preferredBluetoothInputType(availableTypes: List<Int>): Int? = when {
+            availableTypes.contains(AudioDeviceInfo.TYPE_BLE_HEADSET) -> AudioDeviceInfo.TYPE_BLE_HEADSET
+            availableTypes.contains(AudioDeviceInfo.TYPE_BLUETOOTH_SCO) -> AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            else -> null
+        }
     }
 
     init {
@@ -106,10 +124,12 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         this.forceDefaultThisSession = false
         this.firstReadyOfSession = true
         this.sessionActive = true
+        val btRouted = routeMicToBluetoothHeadset()
         ensureRecognizer(prefersOffline())
         listener?.invoke(SpeechEvent.ListeningStarted)
         Log.i(TAG, "Session started (continuous capture).")
-        startSegment()
+        // If we just engaged a Bluetooth mic, let the link warm up before the first segment.
+        if (btRouted) mainHandler.postDelayed({ startSegment() }, SCO_WARMUP_MS) else startSegment()
     }
 
     override fun stopListening() {
@@ -127,6 +147,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         sessionActive = false
         finalized = true
         mainHandler.removeCallbacksAndMessages(null)
+        clearBluetoothRouting()
         try { recognizer?.destroy() } catch (_: Exception) {}
         recognizer = null
         try { toneGen?.release() } catch (_: Exception) {}
@@ -139,6 +160,47 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
     private fun prefersOffline(): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PREFER_OFFLINE, true)
+
+    /**
+     * Route microphone capture to a connected Bluetooth headset for the session. A Bluetooth headset
+     * exposes audio output over A2DP but its microphone only over HFP/SCO (or LE-Audio); without
+     * explicitly selecting it as the communication device, [SpeechRecognizer] keeps capturing from
+     * the built-in mic. Returns true if a Bluetooth input was engaged. (REQ-FUNC-013)
+     */
+    private fun routeMicToBluetoothHeadset(): Boolean {
+        clearBluetoothRouting()   // defensively drop any stale routing from a prior session
+        return try {
+            val am = audioManager
+                ?: context.getSystemService(AudioManager::class.java)?.also { audioManager = it }
+                ?: return false
+            val chosenType = preferredBluetoothInputType(am.availableCommunicationDevices.map { it.type })
+                ?: run {
+                    Log.i(TAG, "No Bluetooth headset mic available; using default mic.")
+                    return false
+                }
+            val device = am.availableCommunicationDevices.first { it.type == chosenType }
+            val ok = am.setCommunicationDevice(device)
+            routedToCommDevice = ok
+            Log.i(TAG, "Bluetooth mic routing: device=${device.productName} type=${device.type} engaged=$ok")
+            ok
+        } catch (e: Exception) {
+            Log.w(TAG, "Bluetooth mic routing failed: ${e.message}")
+            false
+        }
+    }
+
+    /** Release any Bluetooth communication-device routing so the headset leaves call mode. */
+    private fun clearBluetoothRouting() {
+        if (!routedToCommDevice) return
+        try {
+            audioManager?.clearCommunicationDevice()
+            Log.i(TAG, "Cleared Bluetooth mic routing.")
+        } catch (e: Exception) {
+            Log.w(TAG, "clearCommunicationDevice failed: ${e.message}")
+        } finally {
+            routedToCommDevice = false
+        }
+    }
 
     private fun buildRecognizeIntent(preferOffline: Boolean): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -243,6 +305,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         playCue(CUE_STOP_TONE, CUE_STOP_MS)
         listener?.invoke(SpeechEvent.ListeningStopped)
         listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
+        clearBluetoothRouting()
     }
 
     /** ERROR_RECOGNIZER_BUSY / ERROR_CLIENT: back off, recreate, and eventually give up. */
@@ -252,6 +315,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             busyCount >= GIVE_UP_BUSY -> {
                 sessionActive = false
                 finalized = true
+                clearBluetoothRouting()
                 Log.e(TAG, "Recognizer stuck busy after $busyCount tries; giving up.")
                 listener?.invoke(SpeechEvent.Error(error, "Recognizer busy - please try again"))
             }
@@ -275,6 +339,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         } else {
             sessionActive = false
             finalized = true
+            clearBluetoothRouting()
             listener?.invoke(SpeechEvent.Error(error, getErrorMessage(error)))
         }
     }
@@ -322,6 +387,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
                     else -> {
                         sessionActive = false
                         finalized = true
+                        clearBluetoothRouting()
                         val msg = getErrorMessage(error)
                         Log.e(TAG, "Speech recognition error: $msg (code $error)")
                         listener?.invoke(SpeechEvent.Error(error, msg))

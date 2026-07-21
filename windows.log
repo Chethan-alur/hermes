@@ -1,0 +1,12 @@
+2026-07-21 12:15:07,648 [INFO] (HermesWindowsMain) Target Android transport endpoint: 10.230.137.208:9999 (PTT hotkey: 163)
+2026-07-21 12:15:07,648 [INFO] (HermesTextInjector) Win32 APIs not available. Running TextInjector in fallback mode.
+2026-07-21 12:15:07,648 [INFO] (HermesWindowsMain) Initializing Project Hermes Windows Companion Client...
+2026-07-21 12:15:07,649 [INFO] (HermesTCPClient) Attempting connection to Android transport server at 10.230.137.208:9999 (auto-retrying with backoff until reachable)...
+2026-07-21 12:15:07,649 [INFO] (HermesWindowsMain) Transport connecting to phone (auto-retrying in the background)...
+2026-07-21 12:15:07,649 [WARNING] (HermesHotkey) pynput not available; HotkeyManager running in manual/mock mode.
+2026-07-21 12:15:07,649 [INFO] (HermesWindowsMain) Hermes Companion running in background daemon mode.
+2026-07-21 12:15:07,653 [INFO] (HermesTCPClient) Connected to Android transport server at 10.230.137.208:9999
+2026-07-21 12:15:07,653 [INFO] (HermesWindowsMain) Transport connected to 10.230.137.208:9999; ready to dictate.
+2026-07-21 12:15:31,641 [INFO] (HermesWindowsMain) [PARTIAL STREAM]: Project Hermes automated speech synthesis end to end test
+2026-07-21 12:15:31,696 [INFO] (HermesWindowsMain) [FINAL RESULT (Conf: 0.9900000095367432)]: Project Hermes automated speech synthesis end to end test
+2026-07-21 12:15:31,696 [INFO] (HermesTextInjector) Injecting text string (57 chars): 'Project Hermes automated speech synthesis end to end test'

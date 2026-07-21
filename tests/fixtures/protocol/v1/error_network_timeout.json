@@ -1,0 +1,7 @@
+{
+  "version": "1.0",
+  "type": "error",
+  "code": "NETWORK_TIMEOUT",
+  "message": "Network operation timed out during recognition.",
+  "timestamp": 1773945365000
+}

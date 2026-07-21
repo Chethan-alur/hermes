@@ -132,3 +132,28 @@ tasks:
     desc: Check Requirements Traceability Matrix (RTM) alignment
     cmds:
       - python3 .agents/skills/rtm-manager/scripts/check_rtm_alignment.py
+
+  doctor:
+    desc: End-to-end Hermes health check (Windows daemons, Android app, TCP reachability, config sanity)
+    cmds:
+      - python3 .agents/skills/hermes-doctor/scripts/hermes_doctor.py doctor {{.CLI_ARGS}}
+
+  doctor:status:
+    desc: Live runtime status of the running Hermes system (serving/transport + recent pipeline state)
+    cmds:
+      - python3 .agents/skills/hermes-doctor/scripts/hermes_doctor.py status {{.CLI_ARGS}}
+
+  doctor:logs:
+    desc: "Unified, timestamp-ordered log view across windows.log, windows/hermes.log and adb logcat (pass flags after --)"
+    cmds:
+      - python3 .agents/skills/hermes-doctor/scripts/hermes_doctor.py logs {{.CLI_ARGS}}
+
+  doctor:probe:
+    desc: Active end-to-end pipeline probe (ping->heartbeat, simulate_speech causal trace)
+    cmds:
+      - python3 .agents/skills/hermes-doctor/scripts/hermes_doctor.py probe --simulate {{.CLI_ARGS}}
+
+  doctor:report:
+    desc: Write a single JSON + Markdown diagnostic bundle an AI agent can read in one shot
+    cmds:
+      - python3 .agents/skills/hermes-doctor/scripts/hermes_doctor.py report {{.CLI_ARGS}}

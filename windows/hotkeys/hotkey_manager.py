@@ -70,7 +70,16 @@ class HotkeyManager:
     def _is_target_key(self, key) -> bool:
         if keyboard is None:
             return False
-        
+
+        # Match Right Ctrl (VK 163 / VK_RCONTROL) — the Project Hermes default PTT key.
+        # pynput delivers Right Ctrl as the ``Key.ctrl_r`` enum member, which has no ``.vk``
+        # attribute, so the generic VK-number match below cannot catch it.
+        if str(self.hotkey_name) in ["163", "ctrl_r", "rctrl", "right_ctrl"]:
+            if key == keyboard.Key.ctrl_r:
+                return True
+            if hasattr(key, 'vk') and key.vk == 163:
+                return True
+
         # Match F12 or Search Key (VK 170 / VK_BROWSER_SEARCH - Dell laptop F12 icon)
         if self.hotkey_name in ["f12", "search"]:
             if key == keyboard.Key.f12:

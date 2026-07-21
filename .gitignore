@@ -9,3 +9,6 @@ app/build/
 
 # Windows installer build output
 windows/dist/
+
+# hermes-doctor diagnostic report bundles
+.task/hermes-doctor/

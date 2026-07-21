@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,10 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMAS_DIR = REPO_ROOT / "protocol" / "schemas" / "v1"
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "protocol" / "v1"
+TRANSPORT_KT = (
+    REPO_ROOT / "android" / "app" / "src" / "main" / "java"
+    / "com" / "hermes" / "transport" / "TransportServerService.kt"
+)
 
 
 def load_json(path: Path) -> dict:
@@ -25,6 +30,9 @@ class TestProtocolSchemas(unittest.TestCase):
             ("partial_sample.json", "partial.schema.json"),
             ("final_sample.json", "final.schema.json"),
             ("error_sample.json", "error.schema.json"),
+            ("error_network_timeout.json", "error.schema.json"),
+            ("error_recognizer_busy.json", "error.schema.json"),
+            ("error_insufficient_permissions.json", "error.schema.json"),
             ("heartbeat_sample.json", "heartbeat.schema.json"),
         ]
 
@@ -44,6 +52,26 @@ class TestProtocolSchemas(unittest.TestCase):
                 self.assertIn("version", payload)
                 self.assertIn("type", payload)
                 self.assertEqual(payload["version"], "1.0")
+
+    def test_error_schema_covers_all_android_emitted_codes(self):
+        """REQ-NFR-006: every code the Android engine emits must exist in error.schema.json.
+
+        Guards against the enum drift where getErrorCodeString emitted codes
+        (NETWORK_TIMEOUT, RECOGNIZER_BUSY, ...) that were absent from the schema,
+        causing real error frames to fail validation.
+        """
+        error_schema = load_json(SCHEMAS_DIR / "error.schema.json")
+        schema_codes = set(error_schema["properties"]["code"]["enum"])
+
+        kt = TRANSPORT_KT.read_text(encoding="utf-8", errors="replace")
+        block = re.search(r"fun getErrorCodeString\(.*?\{(.*?)\n\s{4}\}", kt, re.DOTALL)
+        self.assertIsNotNone(block, "getErrorCodeString definition not found in Kotlin source")
+        emitted = set(re.findall(r'->\s*"([A-Z_]+)"', block.group(1)))
+        self.assertTrue(emitted, "no error codes parsed from getErrorCodeString")
+
+        orphans = emitted - schema_codes
+        self.assertEqual(orphans, set(),
+                         f"Android emits codes absent from error.schema.json: {sorted(orphans)}")
 
 
 if __name__ == "__main__":

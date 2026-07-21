@@ -1,6 +1,6 @@
 {
   "mode": "PushToTalk",
-  "host": "127.0.0.1",
+  "host": "10.230.137.208",
   "port": 9999,
   "hotkeys": [163]
 }

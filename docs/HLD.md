@@ -212,6 +212,8 @@ sealed class SpeechEvent {
 }
 ```
 
+**Microphone routing (REQ-FUNC-013).** A Bluetooth headset exposes audio *output* over A2DP but its *microphone* only over HFP/SCO (or LE-Audio); `SpeechRecognizer` otherwise captures from the built-in mic. On session start the `AndroidSpeechEngine` therefore selects a connected Bluetooth input via `AudioManager.setCommunicationDevice(...)` (LE-Audio preferred over classic SCO), warms the link briefly before the first segment, and calls `clearCommunicationDevice()` at every session-terminal point so the headset leaves call mode.
+
 ---
 
 ## 6. Communication Protocol Specification
