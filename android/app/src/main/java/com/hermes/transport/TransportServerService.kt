@@ -354,6 +354,12 @@ class TransportServerService : Service() {
                             }
                         }.start()
                     }
+                    "set_mic" -> {
+                        val mic = json.optString("mic", "auto")
+                        getSharedPreferences(AndroidSpeechEngine.PREFS, Context.MODE_PRIVATE)
+                            .edit().putString(AndroidSpeechEngine.KEY_MIC_PREF, mic).apply()
+                        Log.i(TAG, "Mic preference set to '$mic' (applies to the next dictation).")
+                    }
                     else -> {
                         Log.w(TAG, "Unknown command: $command")
                     }
@@ -390,6 +396,17 @@ class TransportServerService : Service() {
                     put("type", "error")
                     put("code", getErrorCodeString(event.code))
                     put("message", event.message)
+                    put("timestamp", System.currentTimeMillis())
+                })
+            }
+            is SpeechEvent.Status -> {
+                sendJson(JSONObject().apply {
+                    put("version", "1.0")
+                    put("type", "status")
+                    put("event", event.event)
+                    event.mic?.let { put("mic", it) }
+                    event.device?.let { put("device", it) }
+                    event.detail?.let { put("detail", it) }
                     put("timestamp", System.currentTimeMillis())
                 })
             }

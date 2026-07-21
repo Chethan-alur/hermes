@@ -23,6 +23,13 @@ sealed class SpeechEvent {
     data class PartialResult(val text: String, val sequence: Int) : SpeechEvent()
     data class FinalResult(val text: String, val confidence: Float) : SpeechEvent()
     data class Error(val code: Int, val message: String) : SpeechEvent()
+    /** Diagnostic breadcrumb surfaced to the companion (which mic, audio detected, fallback, …). */
+    data class Status(
+        val event: String,          // "mic" | "speech_detected" | "mic_fallback" | "no_speech"
+        val mic: String? = null,    // "bluetooth" | "builtin"
+        val device: String? = null, // e.g. "Jabra Evolve 75 SE"
+        val detail: String? = null, // human-readable summary
+    ) : SpeechEvent()
 }
 
 interface SpeechEngine {
@@ -69,12 +76,24 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private var audioManager: AudioManager? = null
     @Volatile private var routedToCommDevice = false
 
+    // Auto-fallback: if a routed Bluetooth mic yields no speech quickly (e.g. the user speaks
+    // into the phone while a BT headset is connected), drop it and re-capture on the built-in
+    // mic for the rest of the session. (REQ-FUNC-013)
+    @Volatile private var forceBuiltInMic = false
+    @Volatile private var autoFallbackEnabled = true   // only auto mic-preference falls back
+    @Volatile private var sessionHeardSpeech = false
+    private var micFallbackRunnable: Runnable? = null
+    private var routedDeviceName: String? = null       // BT device name while routed, for diagnostics
+    @Volatile private var peakRmsDb = NO_RMS           // highest audio level seen this session (dB)
+    private var savedAudioMode: Int? = null            // audio mode to restore after BT SCO capture
+
     companion object {
         private const val TAG = "AndroidSpeechEngine"
         private const val SILENCE_MILLIS = 10000
         private const val LANGUAGE = "en-IN"
         const val PREFS = "hermes_prefs"
         const val KEY_PREFER_OFFLINE = "prefer_offline"
+        const val KEY_MIC_PREF = "mic_preference"   // "auto" | "builtin" | "bluetooth"
 
         private const val RESTART_MS = 150L
         private const val BUSY_BACKOFF_MS = 450L
@@ -93,7 +112,14 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
 
         // Give a just-engaged Bluetooth SCO/LE link a moment to come up before the first
         // segment starts capturing, so the opening words are not clipped. (REQ-FUNC-013)
-        private const val SCO_WARMUP_MS = 400L
+        private const val SCO_WARMUP_MS = 1000L
+
+        // If a Bluetooth mic is routed but no speech is detected within this window, fall back
+        // to the built-in mic for the rest of the session. (REQ-FUNC-013)
+        private const val MIC_SILENCE_FALLBACK_MS = 2500L
+
+        // Sentinel for "no audio level reported yet" (onRmsChanged never fired => silent mic).
+        private const val NO_RMS = -160f
 
         /**
          * Preferred Bluetooth microphone type among the currently available communication-device
@@ -123,10 +149,20 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         this.finalized = false
         this.forceDefaultThisSession = false
         this.firstReadyOfSession = true
+        val pref = micPreference()
+        this.autoFallbackEnabled = (pref == "auto")
+        this.forceBuiltInMic = (pref == "builtin")
+        this.sessionHeardSpeech = false
+        this.peakRmsDb = NO_RMS
+        this.routedDeviceName = null
         this.sessionActive = true
-        val btRouted = routeMicToBluetoothHeadset()
+        Log.i(TAG, "Mic preference: $pref")
+        // "builtin" -> never route Bluetooth (phone mic immediately, no fallback delay). Clear any
+        // stale routing first so the built-in path never inherits a prior session's Bluetooth state.
+        val btRouted = if (forceBuiltInMic) { clearBluetoothRouting(); false } else routeMicToBluetoothHeadset()
         ensureRecognizer(prefersOffline())
         listener?.invoke(SpeechEvent.ListeningStarted)
+        emitMicStatus()
         Log.i(TAG, "Session started (continuous capture).")
         // If we just engaged a Bluetooth mic, let the link warm up before the first segment.
         if (btRouted) mainHandler.postDelayed({ startSegment() }, SCO_WARMUP_MS) else startSegment()
@@ -161,6 +197,10 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private fun prefersOffline(): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PREFER_OFFLINE, true)
 
+    /** User's microphone choice: "auto" (default), "builtin" (phone), or "bluetooth". */
+    private fun micPreference(): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_MIC_PREF, "auto") ?: "auto"
+
     /**
      * Route microphone capture to a connected Bluetooth headset for the session. A Bluetooth headset
      * exposes audio output over A2DP but its microphone only over HFP/SCO (or LE-Audio); without
@@ -179,9 +219,15 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
                     return false
                 }
             val device = am.availableCommunicationDevices.first { it.type == chosenType }
+            // A Bluetooth HFP/SCO mic only captures while the audio system is in communication
+            // mode; without this, setCommunicationDevice "engages" but the mic stays silent.
+            savedAudioMode = am.mode
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
             val ok = am.setCommunicationDevice(device)
+            if (!ok) { savedAudioMode?.let { am.mode = it }; savedAudioMode = null }
             routedToCommDevice = ok
-            Log.i(TAG, "Bluetooth mic routing: device=${device.productName} type=${device.type} engaged=$ok")
+            routedDeviceName = if (ok) device.productName?.toString() else null
+            Log.i(TAG, "Bluetooth mic routing: device=${device.productName} type=${device.type} engaged=$ok mode=IN_COMMUNICATION")
             ok
         } catch (e: Exception) {
             Log.w(TAG, "Bluetooth mic routing failed: ${e.message}")
@@ -194,10 +240,12 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         if (!routedToCommDevice) return
         try {
             audioManager?.clearCommunicationDevice()
+            savedAudioMode?.let { audioManager?.mode = it }   // leave call mode
             Log.i(TAG, "Cleared Bluetooth mic routing.")
         } catch (e: Exception) {
             Log.w(TAG, "clearCommunicationDevice failed: ${e.message}")
         } finally {
+            savedAudioMode = null
             routedToCommDevice = false
         }
     }
@@ -269,11 +317,58 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             Log.w(TAG, "startListening failed: ${e.message}")
             scheduleRestart(BUSY_BACKOFF_MS)
         }
+        if (autoFallbackEnabled && routedToCommDevice && !sessionHeardSpeech && !forceBuiltInMic) scheduleMicFallbackCheck()
     }
 
     private fun scheduleRestart(delayMs: Long) {
         if (!sessionActive) return
         mainHandler.postDelayed({ startSegment() }, delayMs)
+    }
+
+    /**
+     * If a Bluetooth mic was engaged but no speech is heard within [MIC_SILENCE_FALLBACK_MS]
+     * (e.g. the user speaks into the phone while a BT headset is connected), drop the Bluetooth
+     * routing and re-capture on the built-in mic for the rest of the session. (REQ-FUNC-013)
+     */
+    private fun scheduleMicFallbackCheck() {
+        micFallbackRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            if (!sessionActive || finalized) return@Runnable
+            if (sessionHeardSpeech || !routedToCommDevice || forceBuiltInMic) return@Runnable
+            Log.w(TAG, "No speech via Bluetooth mic within ${MIC_SILENCE_FALLBACK_MS}ms; " +
+                       "falling back to the built-in mic for this session.")
+            forceBuiltInMic = true
+            val btName = routedDeviceName ?: "headset"
+            clearBluetoothRouting()
+            listener?.invoke(SpeechEvent.Status("mic_fallback", "builtin", null,
+                "No audio on Bluetooth mic ($btName) within ${MIC_SILENCE_FALLBACK_MS}ms; switched to built-in mic"))
+            recreateRecognizer()   // drop the BT-bound recognizer; the next segment uses the built-in mic
+            segmentRunning = false
+            scheduleRestart(RESTART_MS)
+        }
+        micFallbackRunnable = r
+        mainHandler.postDelayed(r, MIC_SILENCE_FALLBACK_MS)
+    }
+
+    /** Speech was detected on the current input, so cancel any pending Bluetooth-mic fallback. */
+    private fun markSpeechHeard() {
+        if (!sessionHeardSpeech) {
+            sessionHeardSpeech = true
+            micFallbackRunnable?.let { mainHandler.removeCallbacks(it) }
+            listener?.invoke(SpeechEvent.Status("speech_detected", currentMicLabel(), currentMicDevice(),
+                "Audio detected on ${currentMicLabel()} mic"))
+        }
+    }
+
+    private fun currentMicLabel(): String = if (routedToCommDevice) "bluetooth" else "builtin"
+    // Device name only while actually routed to Bluetooth, so a fallen-back session never
+    // mislabels the built-in mic with the headset's name.
+    private fun currentMicDevice(): String? = if (routedToCommDevice) routedDeviceName else null
+
+    /** Tell the companion which microphone the session is capturing from. */
+    private fun emitMicStatus() {
+        val detail = if (routedToCommDevice) "Bluetooth mic: ${routedDeviceName ?: "headset"}" else "Built-in phone mic"
+        listener?.invoke(SpeechEvent.Status("mic", currentMicLabel(), currentMicDevice(), detail))
     }
 
     private fun flushPartial() {
@@ -301,6 +396,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         flushPartial()
         val text = accumulated.toString().trim()
         Log.i(TAG, "Final (accumulated): \"$text\"")
+        if (text.isEmpty()) {
+            val level = if (peakRmsDb > NO_RMS) "peak level %.1f dB".format(peakRmsDb) else "no audio frames received"
+            listener?.invoke(SpeechEvent.Status("no_speech", currentMicLabel(), currentMicDevice(),
+                "No speech captured on ${currentMicLabel()} mic ($level)"))
+        }
         Log.i(TAG, "Stopped cue played.")
         playCue(CUE_STOP_TONE, CUE_STOP_MS)
         listener?.invoke(SpeechEvent.ListeningStopped)
@@ -357,10 +457,13 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             }
 
             override fun onBeginningOfSpeech() {
+                markSpeechHeard()
                 listener?.invoke(SpeechEvent.BeginningOfSpeech)
             }
 
-            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onRmsChanged(rmsdB: Float) {
+                if (rmsdB > peakRmsDb) peakRmsDb = rmsdB
+            }
             override fun onBufferReceived(buffer: ByteArray?) {}
 
             override fun onEndOfSpeech() {
@@ -401,6 +504,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val segText = if (!matches.isNullOrEmpty()) matches[0] else null
                 if (!segText.isNullOrBlank()) {
+                    markSpeechHeard()
                     if (accumulated.isNotEmpty()) accumulated.append(" ")
                     accumulated.append(segText.trim())
                     lastPartial = ""
@@ -412,6 +516,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             override fun onPartialResults(partialResults: Bundle?) {
                 val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
+                    markSpeechHeard()
                     lastPartial = matches[0]
                     val prefix = if (accumulated.isNotEmpty()) accumulated.toString() + " " else ""
                     sequenceCounter++

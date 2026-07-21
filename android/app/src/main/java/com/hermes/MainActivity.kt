@@ -205,6 +205,7 @@ class MainActivity : AppCompatActivity() {
                     setStatus("ERROR", R.color.status_listening)
                     logEvent("Error #${event.code}: ${event.message}")
                 }
+                is SpeechEvent.Status -> logEvent("Status: ${event.detail ?: event.event}")
             }
         }
     }
