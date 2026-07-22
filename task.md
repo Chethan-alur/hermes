@@ -69,7 +69,7 @@ falls back to raw text on unavailable/timeout/error. Pixel 8 has AICore (Gemini 
 - [x] G3. `TranscriptProofreader.kt`: wrap Proofreader (VOICE/ENGLISH); ListenableFuture checkFeatureStatus + downloadFeature; runInference with timeout + fallback to original
 - [x] G4. `SpeechEngine.kt`: `KEY_PROOFREAD` pref (default on); `emitFinal` -> `deliverFinal`; close on destroy. When feature unavailable, proofread() short-circuits (no added latency)
 - [x] G5. Build OK; unit tests 12/12; `adb install -r` OK, app relaunched, listener bound
-- [ ] G6. BLOCKED: on THIS Pixel 8, AICore reports the Proofreading GenAI feature (614) `FEATURE_NOT_FOUND` (error 606) — not provisioned on this device. Integration falls back to raw text (dictation unaffected, zero added latency). Would activate automatically if a device/AICore build offers the feature (Pixel 8 Pro / Pixel 9-class). Decision pending: provision attempt vs cloud LLM vs accept.
+- [x] G6. RESOLVED: on THIS Pixel 8, AICore reports the Proofreading GenAI feature (614) `FEATURE_NOT_FOUND` (error 606) — not provisioned on this device. Integration falls back to raw text (dictation unaffected, zero added latency). Would activate automatically if a device/AICore build offers the feature (Pixel 8 Pro / Pixel 9-class). Decision: **cloud LLM** — opt-in Gemini API polishing behind a vendor-neutral `TranscriptPolisher` interface → REQ-FUNC-019 / Track L. On-device proofreading stays as the fallback polisher when cloud polish is off.
 
 ## Track H — Windows transport selection + mDNS auto-discovery (REQ-FUNC-016) [user request]
 Plan: stop hand-editing the config host; pick the transport endpoint from the tray, and later
@@ -115,6 +115,28 @@ manually verified on the host.
 - [x] K8. Build: Android unit tests 20/20 (incl. parseReverseHosts 5/5) + `assembleDebug` green; `adb install -r` OK
 - [x] K9. Live verify Android dial-out against a host TCP listener: phone dialed 10.141.1.47:9999 over the office VPN (peer 10.141.1.254), sent the heartbeat, honoured `start_listening` (ListeningStarted), replied with a `status` frame. Full v1 protocol confirmed over the inverted connection.
 - [ ] K10. (Manual, Windows host — `pwsh` unavailable under WSL) deploy tray, enable Listen mode, enable phone reverse-connect (host 10.141.1.47), confirm the phone dials in and PTT dictation pastes; firewall allowed
+
+## Track L — Cloud transcript polishing via Gemini API, vendor-neutral (REQ-FUNC-019) [user request]
+Plan: polish grammar/punctuation of the final transcript with the Gemini API (free tier) before it
+leaves the phone, behind a vendor-neutral `TranscriptPolisher` interface so other AI vendors plug in
+later. Selection in `deliverFinal`: cloud (when enabled + key set) > on-device proofreader > raw.
+Best-effort with a 4 s hard timeout; single-flight; ≥4 s min interval; 60 s cool-down on 429/403;
+trivial-input skip. Off by default (sole exception to the offline posture). No protocol/schema
+change — polished text rides the existing `final` frame (Rule 5 steps 3–4 = no change, documented;
+precedent REQ-FUNC-015).
+- [x] L1. RTM: REQ-FUNC-019 row; REQ-FUNC-015 device note; REQ-NFR-001 relaxation note
+- [x] L2. Docs: HLD §2.1 exception + §5.2 polisher abstraction + §8 pluggable list; README caveat; this track
+- [x] L3. JUnit (red): `GeminiApiTest.kt` (UT-AND-POLISH-001) + `PolishGateTest.kt` (UT-AND-POLISH-002)
+- [x] L4. `TranscriptPolisher.kt` interface; `TranscriptProofreader` implements it (`proofread` -> `polish`)
+- [x] L5. `CloudPolishPrefs.kt` (enable/key/model, `active` gate); `GeminiPolisher.kt` (`GeminiApi` + `RateGate` pure helpers; HttpURLConnection on single-thread executor; exactly-once timeout fallback; never log the key)
+- [x] L6. `SpeechEngine.kt`: `cloudPolisher` init/close; `CLOUD_POLISH_TIMEOUT_MS = 4000`; `deliverFinal` selection
+- [x] L7. Android UI: `switch_cloud_polish` + `edit_gemini_key` + `edit_polish_model` in MainActivity/activity_main.xml/strings
+- [x] L8. Build + tests green: JUnit 35/35 incl. GeminiApiTest 8/8 + PolishGateTest 7/7 (`./gradlew testDebugUnitTest`); `assembleDebug` OK; Python 17/17 unchanged; `task check-rtm` lists REQ-FUNC-019
+- [x] L9. Live verify on-device (2026-07-22): two real dictations -> `Polish outcome=ok in 1604ms` and `ok in 1158ms` (model=gemini-flash-lite-latest); second transcript visibly corrected (sentence split, capitalisation, "would too much better job" -> "would do a much better job") and pasted on the PC. Error-fallback path also proven live earlier the same day: the http_404 episode pasted the raw text within ~0.8 s. Remaining drills (`gated`/`skipped`/timeout) are unit-tested but not exercised live.
+- [x] L10. Live API verification with the user's key (fresh free-tier key, 2026-07-22). Found + fixed two breakages and one quality gap:
+  (a) `gemini-2.5-flash-lite` -> 404 "no longer available to new users" on new keys (on-device logcat showed `Polish outcome=http_404 in 770ms`, raw text pasted — fallback worked as designed). DEFAULT_MODEL now `gemini-flash-lite-latest` (alias tracks the newest lite generation, immune to per-generation retirement).
+  (b) Gemini 3.x rejects `thinkingConfig.thinkingBudget` (400) — replaced with `thinkingLevel: "minimal"` (accepted by 3.1 + 3.5 lite, 0 thought tokens).
+  (c) flash-lite under-corrected with the plain prompt (left "me and him goes...buyed" untouched; questions unpunctuated) — added two few-shot user/model pairs; 7-case battery then passed 6/7 at ~0.8–1.2 s/call (grammar repair, question punctuated NOT answered, injection text corrected NOT obeyed, fragment kept incomplete, wording preserved). Known limit: colloquial double negatives pass through on lite; `gemini-3.6-flash` (configurable in the model field) fixes those at ~1.2 s; `gemini-3.5-flash` showed a 6.8 s outlier (> 4 s cap) — avoid.
 
 Note: canonical test invocation is `python3 -m unittest discover -s tests -p "test_*.py"` (all 13 pass).
 Discovering from `-s tests/unit` fails spuriously — `tests/unit/windows/` shadows the real top-level `windows/` package. Use `-s tests`.

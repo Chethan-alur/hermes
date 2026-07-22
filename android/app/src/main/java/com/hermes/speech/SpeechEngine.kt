@@ -75,6 +75,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private var toneGen: ToneGenerator? = null
     private var toneGenVolume = -1              // volume the cached toneGen was built with
     private var proofreader: TranscriptProofreader? = null
+    private var cloudPolisher: GeminiPolisher? = null
     private var audioManager: AudioManager? = null
     @Volatile private var routedToCommDevice = false
 
@@ -101,6 +102,11 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         // Cap the on-device proofreading wait so a slow/absent model never stalls injection; on
         // timeout the raw transcript is delivered instead. (REQ-FUNC-015)
         private const val PROOFREAD_TIMEOUT_MS = 2500L
+
+        // Cap the cloud-polish wait: longer than PROOFREAD_TIMEOUT_MS because it includes a
+        // network round-trip (flash-lite models typically answer in ~1 s), but hard so a slow
+        // API never stalls injection -- raw text is delivered instead. (REQ-FUNC-019)
+        private const val CLOUD_POLISH_TIMEOUT_MS = 4000L
 
         private const val RESTART_MS = 150L
         private const val BUSY_BACKOFF_MS = 450L
@@ -161,6 +167,17 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
             // re-hypothesis of the same speech just replaces the guess (continuation, no commit).
             return wordCount(n) >= wordCount(p)
         }
+
+        /**
+         * Which polisher to use for a final transcript: cloud polish (REQ-FUNC-019) takes
+         * precedence when the user has opted in with an API key, else the on-device proofreader
+         * (REQ-FUNC-015) when enabled, else none. Pure and framework-free so it is unit-testable.
+         */
+        internal fun selectPolisher(cloudActive: Boolean, onDeviceEnabled: Boolean): PolisherChoice = when {
+            cloudActive -> PolisherChoice.CLOUD
+            onDeviceEnabled -> PolisherChoice.ON_DEVICE
+            else -> PolisherChoice.NONE
+        }
     }
 
     init {
@@ -169,6 +186,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         }
         // Warm up the on-device proofreader so its model is ready before the first final. (REQ-FUNC-015)
         proofreader = TranscriptProofreader(context)
+        // Cloud polisher (REQ-FUNC-019); idle unless the user opted in with an API key.
+        cloudPolisher = GeminiPolisher(context)
         // Recognizer is created lazily in ensureRecognizer() on first use.
     }
 
@@ -222,6 +241,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         toneGen = null
         try { proofreader?.close() } catch (_: Exception) {}
         proofreader = null
+        try { cloudPolisher?.close() } catch (_: Exception) {}
+        cloudPolisher = null
         listener = null
         segmentRunning = false
     }
@@ -447,18 +468,25 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     }
 
     /**
-     * Deliver the final transcript, first cleaning it on-device with the proofreader when enabled
-     * and available; on any failure/timeout the raw text is delivered unchanged. (REQ-FUNC-015)
+     * Deliver the final transcript, polishing it first (grammar/punctuation) when a polisher is
+     * active: cloud polish (REQ-FUNC-019) when the user opted in with an API key, else the
+     * on-device proofreader (REQ-FUNC-015) when enabled. Strictly best-effort -- on any
+     * failure/timeout the raw text is delivered unchanged.
      */
     private fun deliverFinal(text: String) {
-        val pr = proofreader
-        if (text.isNotEmpty() && proofreadEnabled() && pr != null) {
-            pr.proofread(text, PROOFREAD_TIMEOUT_MS) { cleaned ->
-                if (cleaned != text) Log.i(TAG, "Proofread: \"$text\" -> \"$cleaned\"")
-                listener?.invoke(SpeechEvent.FinalResult(cleaned, 1.0f))
-            }
-        } else {
-            listener?.invoke(SpeechEvent.FinalResult(text, 1.0f))
+        val done: (String) -> Unit = { polished ->
+            if (polished != text) Log.i(TAG, "Polished: \"$text\" -> \"$polished\"")
+            listener?.invoke(SpeechEvent.FinalResult(polished, 1.0f))
+        }
+        if (text.isEmpty()) { done(text); return }
+        val cloud = cloudPolisher
+        val onDevice = proofreader
+        when (selectPolisher(CloudPolishPrefs.read(context).active, proofreadEnabled())) {
+            PolisherChoice.CLOUD ->
+                if (cloud != null) cloud.polish(text, CLOUD_POLISH_TIMEOUT_MS, done) else done(text)
+            PolisherChoice.ON_DEVICE ->
+                if (onDevice != null) onDevice.polish(text, PROOFREAD_TIMEOUT_MS, done) else done(text)
+            PolisherChoice.NONE -> done(text)
         }
     }
 

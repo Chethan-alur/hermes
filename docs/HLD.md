@@ -21,7 +21,7 @@ Unlike cloud-dependent dictation services or subscription-based speech tools, He
 
 ### 2.1 Core Architectural Principles
 1. **Contract-First Architecture**: Inter-system protocol schemas (`protocol/`) govern communication, decoupling Android and Windows clients so both can evolve independently.
-2. **Zero Cloud Dependency**: Speech processing is strictly local (Tensor G3 / Android SpeechRecognizer / Whisper.cpp), ensuring privacy and offline functionality.
+2. **Zero Cloud Dependency**: Speech processing is strictly local (Tensor G3 / Android SpeechRecognizer / Whisper.cpp), ensuring privacy and offline functionality. *Sole exception*: the opt-in, off-by-default cloud polishing of final transcripts (REQ-FUNC-019), which sends only the final text to a user-configured AI vendor (Gemini by default) using the user's own API key.
 3. **Pluggable Architecture**: Abstracts speech recognition engines and output processing pipelines so alternative engines (Whisper.cpp, Gemini Nano) or target actions (Voice Commands, LLM post-processing) can be added without architecture redesign.
 
 ### 2.2 Key Operational Metrics (NFRs)
@@ -227,6 +227,8 @@ sealed class SpeechEvent {
 }
 ```
 
+**Transcript polishing (REQ-FUNC-015, REQ-FUNC-019).** Final-transcript post-processing (grammar/punctuation) is hidden behind a second small abstraction, `TranscriptPolisher` (`polish(text, timeoutMs, onResult)` + `close()`), with an exactly-once, best-effort contract: the callback always fires, delivering the polished text or the original text on any failure, timeout, or rate-limit — dictation never stalls. Implementations: `TranscriptProofreader` (on-device Gemini Nano via ML Kit/AICore, REQ-FUNC-015) and `GeminiPolisher` (cloud Gemini API, opt-in, REQ-FUNC-019); future vendor polishers (OpenAI, Anthropic, …) implement the same interface. `AndroidSpeechEngine.deliverFinal` selects one polisher per final: cloud when enabled with a key, else on-device, else none.
+
 **Microphone routing (REQ-FUNC-013).** A Bluetooth headset exposes audio *output* over A2DP but its *microphone* only over HFP/SCO (or LE-Audio); `SpeechRecognizer` otherwise captures from the built-in mic. On session start the `AndroidSpeechEngine` therefore selects a connected Bluetooth input via `AudioManager.setCommunicationDevice(...)` (LE-Audio preferred over classic SCO), warms the link briefly before the first segment, and calls `clearCommunicationDevice()` at every session-terminal point so the headset leaves call mode.
 
 ---
@@ -372,8 +374,11 @@ Speech Output  -->  Pipeline Manager  -->  Formatting Filter  -->  Command Dispa
 1. **Pluggable Speech Engines**:
    - `AndroidSpeechRecognizer` (Default on Tensor G3)
    - `WhisperCppEngine` (Local ONNX/Whisper C++ engine for offline fallback)
-   - `GeminiNanoEngine` (On-device LLM speech refinement)
-2. **Pluggable Transport Layer**:
+2. **Pluggable Transcript Polishers** (`TranscriptPolisher` interface, realised):
+   - `TranscriptProofreader` (On-device Gemini Nano via ML Kit/AICore, REQ-FUNC-015)
+   - `GeminiPolisher` (Cloud Gemini API, opt-in with user's key, REQ-FUNC-019)
+   - Future: OpenAI / Anthropic / local-LLM polishers behind the same interface
+3. **Pluggable Transport Layer**:
    - USB ADB Tunnel (Initial release)
    - Local Wi-Fi (UDP/TCP with TLS)
    - Bluetooth Low Energy (BLE) / QUIC protocol

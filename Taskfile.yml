@@ -59,6 +59,14 @@ tasks:
     cmds:
       - '{{.ADB}} install -r android/app/build/outputs/apk/debug/app-debug.apk'
 
+  android:test:
+    desc: Run the Android JUnit unit tests
+    deps: [setup]
+    dir: android
+    cmds:
+      - chmod +x ./gradlew
+      - ./gradlew testDebugUnitTest --stacktrace
+
   android:clean:
     desc: Clean Android build artifacts
     dir: android

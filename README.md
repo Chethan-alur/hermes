@@ -32,10 +32,10 @@ When you hold a hotkey on Windows (default: **`Right Ctrl`**), your phone transc
 ```
 
 ### 🌟 Why Hermes?
-* **100% Offline & Private**: Zero data sent to the cloud. Works in air-gapped environments.
+* **100% Offline & Private**: Zero data sent to the cloud. Works in air-gapped environments. (One optional, off-by-default exception: cloud polishing of final transcripts via your own Gemini API key, REQ-FUNC-019.)
 * **Zero Subscriptions**: Free and open-source forever.
 * **Ultra-Low Latency**: End-to-end delay **< 500 ms** from speech stop to text appearance.
-* **Extensible Architecture**: Modular speech engines (SpeechRecognizer, Whisper.cpp, Gemini Nano) and formatting pipelines (Code Mode, Markdown Mode).
+* **Extensible Architecture**: Modular speech engines (SpeechRecognizer, Whisper.cpp, Gemini Nano), pluggable transcript polishers (`TranscriptPolisher`: on-device Gemini Nano, cloud Gemini API, future vendors), and formatting pipelines (Code Mode, Markdown Mode).
 
 ---
 

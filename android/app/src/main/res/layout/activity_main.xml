@@ -210,6 +210,52 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:max="100" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="14dp"
+                        android:background="?android:attr/listDivider" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switch_cloud_polish"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/label_cloud_polish"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <EditText
+                        android:id="@+id/edit_gemini_key"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginStart="4dp"
+                        android:hint="@string/hint_gemini_key"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <EditText
+                        android:id="@+id/edit_polish_model"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginStart="4dp"
+                        android:hint="@string/hint_polish_model"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/help_cloud_polish"
+                        android:textSize="12sp"
+                        android:textColor="?android:attr/textColorSecondary" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

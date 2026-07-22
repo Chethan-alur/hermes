@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * feature model is checked once at construction and downloaded on demand; correction only kicks in
  * once the model reports ready.
  */
-class TranscriptProofreader(context: Context) {
+class TranscriptProofreader(context: Context) : TranscriptPolisher {
 
     private val main = Handler(Looper.getMainLooper())
     // ML Kit GenAI returns Guava ListenableFutures; run their completion listeners on the main thread.
@@ -86,7 +86,7 @@ class TranscriptProofreader(context: Context) {
      * Proofread [text] on-device, calling [onResult] exactly once on the main thread with the
      * corrected text -- or the original [text] on any failure, timeout, or unavailability.
      */
-    fun proofread(text: String, timeoutMs: Long, onResult: (String) -> Unit) {
+    override fun polish(text: String, timeoutMs: Long, onResult: (String) -> Unit) {
         val pr = proofreader
         if (pr == null || !ready || text.isBlank()) { onResult(text); return }
 
@@ -113,7 +113,7 @@ class TranscriptProofreader(context: Context) {
         }
     }
 
-    fun close() { try { proofreader?.close() } catch (_: Throwable) {} }
+    override fun close() { try { proofreader?.close() } catch (_: Throwable) {} }
 
     companion object { private const val TAG = "TranscriptProofreader" }
 }

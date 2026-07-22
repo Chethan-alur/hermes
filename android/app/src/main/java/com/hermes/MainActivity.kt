@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.hermes.speech.AndroidSpeechEngine
+import com.hermes.speech.CloudPolishPrefs
 import com.hermes.speech.SpeechEngine
 import com.hermes.speech.SpeechEvent
 import com.hermes.transport.TransportPrefs
@@ -82,6 +83,41 @@ class MainActivity : AppCompatActivity() {
                 logEvent("Cue volume: ${if (sb.progress == 0) "off" else "${sb.progress}%"}")
             }
         })
+
+        // Cloud polish (REQ-FUNC-019): opt-in grammar/punctuation correction of the final
+        // transcript via the Gemini API with the user's own key. The engine reads these prefs on
+        // every final, so changes apply immediately. NEVER log the key.
+        val switchPolish = findViewById<MaterialSwitch>(R.id.switch_cloud_polish)
+        val editGeminiKey = findViewById<EditText>(R.id.edit_gemini_key)
+        val editPolishModel = findViewById<EditText>(R.id.edit_polish_model)
+        switchPolish.isChecked = prefs.getBoolean(CloudPolishPrefs.KEY_ENABLED, false)
+        editGeminiKey.setText(prefs.getString(CloudPolishPrefs.KEY_API_KEY, "") ?: "")
+        editPolishModel.setText(prefs.getString(CloudPolishPrefs.KEY_MODEL, "") ?: "")
+        switchPolish.setOnCheckedChangeListener { _, c ->
+            prefs.edit()
+                .putBoolean(CloudPolishPrefs.KEY_ENABLED, c)
+                .putString(CloudPolishPrefs.KEY_API_KEY, editGeminiKey.text.toString())
+                .putString(CloudPolishPrefs.KEY_MODEL, editPolishModel.text.toString())
+                .apply()
+            val s = CloudPolishPrefs.read(this)
+            when {
+                !c -> logEvent("Cloud polish: disabled")
+                s.active -> logEvent("Cloud polish: ENABLED (${s.model})")
+                else -> logEvent("Cloud polish: enabled but NO API key set — polishing stays off")
+            }
+        }
+        editGeminiKey.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                prefs.edit().putString(CloudPolishPrefs.KEY_API_KEY, editGeminiKey.text.toString()).apply()
+                logEvent(if (editGeminiKey.text.isBlank()) "Gemini API key cleared" else "Gemini API key saved")
+            }
+        }
+        editPolishModel.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                prefs.edit().putString(CloudPolishPrefs.KEY_MODEL, editPolishModel.text.toString()).apply()
+                logEvent("Cloud polish model: ${CloudPolishPrefs.read(this).model}")
+            }
+        }
 
         // Transport selection: which underlying transport(s) the service is allowed to listen on.
         val switchWifi = findViewById<MaterialSwitch>(R.id.switch_wifi)
