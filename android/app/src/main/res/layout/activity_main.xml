@@ -194,6 +194,22 @@
                         android:layout_marginStart="4dp"
                         android:text="@string/label_online_mode"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <TextView
+                        android:id="@+id/label_cue"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/label_cue_volume"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <SeekBar
+                        android:id="@+id/seek_cue_volume"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:max="100" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

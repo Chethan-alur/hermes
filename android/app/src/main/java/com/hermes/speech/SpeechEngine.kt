@@ -73,6 +73,7 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var firstReadyOfSession = false
     private var toneGen: ToneGenerator? = null
+    private var toneGenVolume = -1              // volume the cached toneGen was built with
     private var proofreader: TranscriptProofreader? = null
     private var audioManager: AudioManager? = null
     @Volatile private var routedToCommDevice = false
@@ -112,7 +113,8 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         private val CUE_STREAM = AudioManager.STREAM_ALARM
         private val CUE_START_TONE = ToneGenerator.TONE_PROP_BEEP
         private val CUE_STOP_TONE = ToneGenerator.TONE_PROP_BEEP2
-        private const val CUE_VOLUME = 80          // 0..100
+        const val KEY_CUE_VOLUME = "cue_volume"    // start/stop cue loudness 0..100 (0 = off)
+        const val DEFAULT_CUE_VOLUME = 35          // quiet by default (office-friendly)
         private const val CUE_START_MS = 150
         private const val CUE_STOP_MS = 120
 
@@ -585,15 +587,31 @@ class AndroidSpeechEngine(private val context: Context) : SpeechEngine {
         })
     }
 
-    /** One-shot audible cue played by the phone (start beep when ready, stop beep on finalize). */
+    /** User-configurable start/stop cue loudness (0..100, 0 = off). (REQ-FUNC-017) */
+    private fun cueVolume(): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CUE_VOLUME, DEFAULT_CUE_VOLUME).coerceIn(0, 100)
+
+    /**
+     * One-shot audible cue played by the phone (start beep when ready, stop beep on finalize).
+     * Loudness follows the [KEY_CUE_VOLUME] preference; the ToneGenerator's volume is fixed at
+     * construction, so it is recreated when the level changes, and level 0 silences the cue. (REQ-FUNC-017)
+     */
     private fun playCue(tone: Int, durationMs: Int) {
+        val vol = cueVolume()
+        if (vol <= 0) return
         try {
-            val tg = toneGen ?: ToneGenerator(CUE_STREAM, CUE_VOLUME).also { toneGen = it }
-            tg.startTone(tone, durationMs)
+            if (toneGen == null || toneGenVolume != vol) {
+                try { toneGen?.release() } catch (_: Exception) {}
+                toneGen = ToneGenerator(CUE_STREAM, vol)
+                toneGenVolume = vol
+            }
+            toneGen?.startTone(tone, durationMs)
         } catch (e: RuntimeException) {
             Log.w(TAG, "Audio cue unavailable: ${e.message}")
             try { toneGen?.release() } catch (_: Exception) {}
             toneGen = null
+            toneGenVolume = -1
         }
     }
 

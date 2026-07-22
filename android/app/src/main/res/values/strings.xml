@@ -19,6 +19,8 @@
 
     <string name="label_online_mode">Online mode (higher accuracy, not private)</string>
 
+    <string name="label_cue_volume">Start/stop cue volume</string>
+
     <string name="label_transport">Transports</string>
     <string name="label_listen_wifi">Wi-Fi</string>
     <string name="label_listen_mobile">Mobile data</string>

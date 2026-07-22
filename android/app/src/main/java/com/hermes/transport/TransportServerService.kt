@@ -12,6 +12,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.IBinder
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -58,6 +60,11 @@ class TransportServerService : Service() {
     private var currentTarget: BindTarget? = null
     private var speechEngine: SpeechEngine? = null
 
+    // mDNS/DNS-SD advertising so the Windows client can auto-discover the phone. (REQ-FUNC-016)
+    private var nsdManager: NsdManager? = null
+    private var nsdListener: NsdManager.RegistrationListener? = null
+    @Volatile private var nsdRegistered = false
+
     // --- Transport availability --------------------------------------------------
     private val networks = java.util.concurrent.ConcurrentHashMap<Network, NetworkCapabilities>()
     @Volatile private var wifiAvailable = false
@@ -91,6 +98,17 @@ class TransportServerService : Service() {
          */
         internal fun isUsbTetherInterfaceName(name: String): Boolean =
             name.startsWith("usb") || name.startsWith("rndis") || name.startsWith("ncm")
+
+        const val NSD_SERVICE_TYPE = "_hermes._tcp"
+
+        /**
+         * mDNS/DNS-SD service instance name advertised for discovery. Pure and framework-free so it
+         * is unit-testable: sanitises the device model to name-safe characters. (REQ-FUNC-016)
+         */
+        internal fun nsdServiceName(model: String): String {
+            val safe = Regex("[^A-Za-z0-9 _-]").replace(model, "").trim().ifEmpty { "device" }
+            return "Hermes ($safe)"
+        }
     }
 
     override fun onCreate() {
@@ -251,12 +269,46 @@ class TransportServerService : Service() {
         serverThread = null
         // Closing the socket unblocks the parked accept() and terminates its loop (socket.isClosed).
         try { sock?.close() } catch (_: Exception) {}
+        unregisterMdns()
+    }
+
+    /** Advertise _hermes._tcp on the LAN so the Windows client can auto-discover us. (REQ-FUNC-016) */
+    private fun registerMdns() {
+        if (nsdRegistered || nsdListener != null) return
+        try {
+            val nsd = nsdManager ?: getSystemService(NsdManager::class.java)?.also { nsdManager = it } ?: return
+            val info = NsdServiceInfo().apply {
+                serviceName = nsdServiceName(android.os.Build.MODEL)
+                serviceType = NSD_SERVICE_TYPE
+                port = PORT
+            }
+            val listener = object : NsdManager.RegistrationListener {
+                override fun onServiceRegistered(s: NsdServiceInfo) { nsdRegistered = true; Log.i(TAG, "mDNS advertised: ${s.serviceName} $NSD_SERVICE_TYPE:$PORT") }
+                override fun onRegistrationFailed(s: NsdServiceInfo, err: Int) { nsdRegistered = false; Log.w(TAG, "mDNS registration failed: $err") }
+                override fun onServiceUnregistered(s: NsdServiceInfo) { nsdRegistered = false }
+                override fun onUnregistrationFailed(s: NsdServiceInfo, err: Int) { Log.w(TAG, "mDNS unregistration failed: $err") }
+            }
+            nsdListener = listener
+            nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+        } catch (e: Exception) {
+            Log.w(TAG, "registerMdns failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterMdns() {
+        val nsd = nsdManager
+        val listener = nsdListener
+        nsdListener = null
+        nsdRegistered = false
+        if (nsd != null && listener != null) {
+            try { nsd.unregisterService(listener) } catch (e: Exception) { Log.w(TAG, "unregisterMdns: ${e.message}") }
+        }
     }
 
     /** Open and start an accept loop for [target]. Returns true on success. */
     private fun startServing(target: BindTarget): Boolean {
         val bindAddr: InetAddress? = when (target) {
-            BindTarget.Wildcard -> null                 // null => wildcard 0.0.0.0
+            BindTarget.Wildcard -> null                 // null => wildcard (all interfaces)
             is BindTarget.Specific -> target.address
         }
         val socket = try {
@@ -274,6 +326,7 @@ class TransportServerService : Service() {
         serverThread = thread
         thread.start()
         Log.i(TAG, "ServerSocket listening on ${bindAddr?.hostAddress ?: "0.0.0.0"}:$PORT")
+        registerMdns()
         return true
     }
 

@@ -71,5 +71,31 @@ falls back to raw text on unavailable/timeout/error. Pixel 8 has AICore (Gemini 
 - [x] G5. Build OK; unit tests 12/12; `adb install -r` OK, app relaunched, listener bound
 - [ ] G6. BLOCKED: on THIS Pixel 8, AICore reports the Proofreading GenAI feature (614) `FEATURE_NOT_FOUND` (error 606) — not provisioned on this device. Integration falls back to raw text (dictation unaffected, zero added latency). Would activate automatically if a device/AICore build offers the feature (Pixel 8 Pro / Pixel 9-class). Decision pending: provision attempt vs cloud LLM vs accept.
 
+## Track H — Windows transport selection + mDNS auto-discovery (REQ-FUNC-016) [user request]
+Plan: stop hand-editing the config host; pick the transport endpoint from the tray, and later
+auto-discover the phone on the LAN.
+- [x] H1. RTM REQ-FUNC-016
+- [x] H2. `hermes_hotkey.ps1`: `transports` config map; tray **Transport** submenu (named endpoints); `Set-Transport` live switch (drop socket + reset backoff -> Ensure-Connected redials); persisted
+- [x] H2b. Runtime IP editing from the tray (no JSON edit): **Add endpoint...**, **Edit current endpoint...**, **Remove current endpoint** via InputBox; persists + reconnects. Enables different networks.
+- [x] H3. Deployed + restarted; verified **WireGuard connected** (laptop 10.10.0.10 <-> phone 10.10.0.40:9999 over tunnel). Picker works for all endpoints incl. WireGuard.
+- [ ] H4. Android: advertise `_hermes._tcp` via `NsdManager` when serving (mDNS)
+- [ ] H5. Windows: mDNS discovery of `_hermes._tcp` (LAN only; picker is the fallback; does NOT cross WireGuard)
+Note: repo `windows/hermes_hotkey.ps1` picker change is UNCOMMITTED.
+
+## Track I — Configurable start/stop cue volume (REQ-FUNC-017) [user request: too loud for office]
+- [x] I1. RTM REQ-FUNC-017
+- [x] I2. `SpeechEngine.kt`: `KEY_CUE_VOLUME` pref (default 35, was fixed 80; 0=off); `playCue` rebuilds ToneGenerator on level change
+- [x] I3. Android UI: `SeekBar` (seek_cue_volume) + label in MainActivity/activity_main.xml/strings
+- [ ] I4. Build APK + install; verify the slider softens/silences the cue
+
+## Track J — Connection-state UX + mDNS-first failover [user bugfixes]
+- [x] J1. Tray icon: green=connected, grey=disconnected, red=dictating (`Update-TrayIcon`) — deployed
+- [x] J2. Overlay: `Disconnected` state; `Start-Dictation` shows "Not connected" (no false "Listening") — deployed
+- [x] J3. Windows: `Resolve-HermesMdns` (raw DNS-SD, QU bit) + `Try-Connect($host)` + `Get-ConnectCandidates` + `Ensure-Connected` failover; mDNS tray toggle — deployed (log shows new connect cycle)
+- [x] J4. Android NSD advertise (`_hermes._tcp`) + `nsdServiceName` helper + JUnit (5/5). Installed; phone advertises "Hermes (Pixel 8) _hermes._tcp:9999". Windows mDNS query verified working (discovered the phone).
+- [x] J5. RTM REQ-FUNC-016 extended; Windows tray + Android APK deployed.
+- Config simplified per user: named `transports` map -> plain `hosts` IP list (tray "Server" submenu; Add/Edit/Remove IP; auto-migrates old config). mDNS now returns ALL A records (multi-homed).
+- KNOWN ISSUE (not a bind-family bug): wildcard serving refuses the **USB-tether** IP due to an Android tether reverse-routing/source-address quirk (SYN-ACK egresses the default network) — WireGuard/Wi-Fi over the same wildcard connect fine; USB needs USB-only (Specific bind). `ServerSocketChannel.open(INET)` fix needs compileSdk 35 (only 34 installed). Deferred.
+
 Note: canonical test invocation is `python3 -m unittest discover -s tests -p "test_*.py"` (all 13 pass).
 Discovering from `-s tests/unit` fails spuriously — `tests/unit/windows/` shadows the real top-level `windows/` package. Use `-s tests`.

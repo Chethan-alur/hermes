@@ -1,13 +1,13 @@
 package com.hermes.transport
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * REQ-FUNC-008 / REQ-FUNC-012 — verifies which network-interface names are recognised as USB
- * tethering, used by the availability gate (and re-checked on every reconcile so a missed
- * ACTION_USB_STATE broadcast cannot strand the listener). Pure logic, no Android runtime needed.
+ * REQ-FUNC-008 / REQ-FUNC-012 — USB-tether interface detection used by the availability gate; and
+ * REQ-FUNC-016 — the mDNS/DNS-SD service name advertised for discovery. Pure logic, no runtime.
  */
 class UsbTetherInterfaceTest {
 
@@ -24,5 +24,20 @@ class UsbTetherInterfaceTest {
         assertFalse(TransportServerService.isUsbTetherInterfaceName("rmnet1"))
         assertFalse(TransportServerService.isUsbTetherInterfaceName("lo"))
         assertFalse(TransportServerService.isUsbTetherInterfaceName("eth0"))
+    }
+
+    @Test
+    fun nsdServiceNamePrefixesModel() {
+        assertEquals("Hermes (Pixel 8)", TransportServerService.nsdServiceName("Pixel 8"))
+    }
+
+    @Test
+    fun nsdServiceNameStripsUnsafeChars() {
+        assertEquals("Hermes (ab)", TransportServerService.nsdServiceName("a/b"))
+    }
+
+    @Test
+    fun nsdServiceNameFallsBackWhenEmpty() {
+        assertEquals("Hermes (device)", TransportServerService.nsdServiceName("   "))
     }
 }

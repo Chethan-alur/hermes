@@ -65,6 +65,7 @@ public class Win32Input {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName Microsoft.VisualBasic   # InputBox for editing transport IPs at runtime
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # Dictation overlay window (REQ-FUNC-014). A borderless HUD that must NEVER become the foreground
@@ -113,7 +114,7 @@ function Write-Log {
 
 # --- Configuration -------------------------------------------------------------
 function Load-Config {
-    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163); mic = 'auto'; overlay = $true }  # 163 = Right Ctrl
+    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163); mic = 'auto'; overlay = $true; mdns = $true; hosts = @() }  # 163 = Right Ctrl
     if (Test-Path $global:ConfigPath) {
         try {
             $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
@@ -124,6 +125,13 @@ function Load-Config {
             if ($j.mic)     { $cfg.mic = [string]$j.mic }
             # $null check (not truthiness) so an explicit overlay=false is honoured, not treated as "absent".
             if ($null -ne $j.overlay) { $cfg.overlay = [bool]$j.overlay }
+            if ($null -ne $j.mdns)    { $cfg.mdns = [bool]$j.mdns }
+            # Candidate server IPs to try (after mDNS). Plain list; migrate the old named-transport map.
+            if ($j.hosts) {
+                $cfg.hosts = @($j.hosts | ForEach-Object { [string]$_ } | Where-Object { $_ })
+            } elseif ($j.transports) {
+                $cfg.hosts = @($j.transports.PSObject.Properties | ForEach-Object { [string]$_.Value } | Where-Object { $_ })
+            }
         } catch { Write-Log "Config parse failed; using defaults. $($_.Exception.Message)" 'DarkYellow' }
     }
     if ($cfg.mode -ne 'Toggle' -and $cfg.mode -ne 'PushToTalk') { $cfg.mode = 'PushToTalk' }
@@ -132,8 +140,8 @@ function Load-Config {
 }
 
 function Save-Config {
-    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST; mic = $script:MicPref; overlay = $script:OverlayEnabled }
-    try { ($obj | ConvertTo-Json) | Set-Content -Path $global:ConfigPath -Encoding UTF8 } catch {}
+    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST; mic = $script:MicPref; overlay = $script:OverlayEnabled; mdns = $script:MdnsEnabled; hosts = @($script:Hosts) }
+    try { ($obj | ConvertTo-Json -Depth 5) | Set-Content -Path $global:ConfigPath -Encoding UTF8 } catch {}
 }
 
 $cfg      = Load-Config
@@ -143,6 +151,10 @@ $VK_LIST  = @($cfg.hotkeys)
 $script:Mode           = $cfg.mode
 $script:MicPref        = $cfg.mic
 $script:OverlayEnabled = [bool]$cfg.overlay
+$script:MdnsEnabled    = [bool]$cfg.mdns
+$script:Hosts          = @($cfg.hosts)
+# Always keep the currently-configured host in the candidate list.
+if ($HOST_IP -and (@($script:Hosts) -notcontains $HOST_IP)) { $script:Hosts += $HOST_IP }
 $script:isListening    = $false
 $script:ShouldExit  = $false
 $script:targetHwnd  = [IntPtr]::Zero
@@ -161,8 +173,9 @@ function New-CircleIcon([System.Drawing.Color]$fill) {
     $bmp.Dispose()
     return $icon
 }
-$global:IconIdle = New-CircleIcon ([System.Drawing.Color]::FromArgb(38, 166, 154))  # teal
-$global:IconRec  = New-CircleIcon ([System.Drawing.Color]::FromArgb(229, 57, 53))   # red
+$global:IconConnected    = New-CircleIcon ([System.Drawing.Color]::FromArgb(67, 190, 120))  # green  = connected
+$global:IconDisconnected = New-CircleIcon ([System.Drawing.Color]::FromArgb(130, 130, 135)) # grey   = not connected
+$global:IconRec          = New-CircleIcon ([System.Drawing.Color]::FromArgb(229, 57, 53))   # red    = dictating
 
 # --- System tray ---------------------------------------------------------------
 $script:menu       = New-Object System.Windows.Forms.ContextMenuStrip
@@ -187,6 +200,12 @@ $script:menuMic.DropDownItems.Add($script:micPhone) | Out-Null
 $script:menuMic.DropDownItems.Add($script:micBt)    | Out-Null
 
 $script:itemOverlay = New-Object System.Windows.Forms.ToolStripMenuItem 'Show dictation overlay'
+$script:itemMdns    = New-Object System.Windows.Forms.ToolStripMenuItem 'Auto-discover (mDNS)'
+
+# Transport submenu: one checkable entry per configured endpoint, plus Add/Edit/Remove actions so
+# IPs can be changed at runtime for different networks. Populated by Rebuild-TransportMenu at
+# startup, once its helper functions are defined.
+$script:menuTransport = New-Object System.Windows.Forms.ToolStripMenuItem 'Server'
 
 $script:itemToggle.Add_Click({ Set-Mode 'Toggle' })
 $script:itemPTT.Add_Click({ Set-Mode 'PushToTalk' })
@@ -194,6 +213,7 @@ $script:micAuto.Add_Click({ Set-MicPref 'auto' })
 $script:micPhone.Add_Click({ Set-MicPref 'builtin' })
 $script:micBt.Add_Click({ Set-MicPref 'bluetooth' })
 $script:itemOverlay.Add_Click({ Set-OverlayEnabled (-not $script:OverlayEnabled) })
+$script:itemMdns.Add_Click({ Set-MdnsEnabled (-not $script:MdnsEnabled) })
 $script:itemExit.Add_Click({ $script:ShouldExit = $true })
 
 $script:menu.Items.Add($script:itemStatus) | Out-Null
@@ -204,13 +224,15 @@ $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | O
 $script:menu.Items.Add($script:itemToggle) | Out-Null
 $script:menu.Items.Add($script:itemPTT) | Out-Null
 $script:menu.Items.Add($script:menuMic) | Out-Null
+$script:menu.Items.Add($script:menuTransport) | Out-Null
 $script:menu.Items.Add($script:itemOverlay) | Out-Null
+$script:menu.Items.Add($script:itemMdns) | Out-Null
 $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $script:menu.Items.Add($script:itemExit) | Out-Null
 
 $script:notify = New-Object System.Windows.Forms.NotifyIcon
-$script:notify.Icon = $global:IconIdle
-$script:notify.Text = 'Project Hermes - Ready'
+$script:notify.Icon = $global:IconDisconnected
+$script:notify.Text = 'Project Hermes - Disconnected'
 $script:notify.Visible = $true
 $script:notify.ContextMenuStrip = $script:menu
 
@@ -245,6 +267,17 @@ function Set-OverlayEnabled([bool]$on) {
     Write-Log "Dictation overlay: $(if ($on) { 'enabled' } else { 'disabled' })" 'Cyan'
 }
 
+function Update-MdnsCheck { $script:itemMdns.Checked = $script:MdnsEnabled }
+
+# Toggle mDNS auto-discovery. When on, the connect cycle queries _hermes._tcp first, then falls
+# back to the configured transport endpoints.
+function Set-MdnsEnabled([bool]$on) {
+    $script:MdnsEnabled = $on
+    Update-MdnsCheck
+    Save-Config
+    Write-Log "mDNS auto-discovery: $(if ($on) { 'enabled' } else { 'disabled' })" 'Cyan'
+}
+
 # Tell the phone which microphone to use. Applies to the next dictation; remembered on the phone.
 function Send-SetMic($m) {
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -260,21 +293,116 @@ function Set-MicPref($m) {
     Write-Log "Microphone preference: $m" 'Cyan'
 }
 
-function Set-ListeningState($listening) {
-    $script:isListening = $listening
-    if ($listening) {
+function Update-TransportChecks {
+    foreach ($item in $script:menuTransport.DropDownItems) {
+        # Only the endpoint items carry a Tag with a Host; skip the separator and Add/Edit/Remove.
+        if ($item -is [System.Windows.Forms.ToolStripMenuItem] -and $item.Tag -and $item.Tag.Host) {
+            $item.Checked = ($item.Tag.Host -eq $script:HOST_IP)
+        }
+    }
+}
+
+# Switch the active server IP and reconnect live (no restart): drop the current socket and reset
+# the backoff so the main loop's Ensure-Connected immediately dials the new host.
+function Set-Transport($hostIp) {
+    $script:HOST_IP = [string]$hostIp
+    Update-TransportChecks
+    $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (switching...)"
+    Save-Config
+    Write-Log "Server -> $hostIp; reconnecting..." 'Cyan'
+    Close-Transport
+    Set-ListeningState $false
+    Hide-Overlay
+    $script:BackoffMs = $script:BackoffMinMs
+    $script:NextConnectAt = 0
+    $script:AnnouncedConnecting = $false
+}
+
+# (Re)build the Server submenu from the plain IP list ($script:Hosts) plus Add/Edit/Remove actions.
+function Rebuild-TransportMenu {
+    $script:menuTransport.DropDownItems.Clear()
+    foreach ($h in @($script:Hosts)) {
+        $hs = [string]$h
+        if (-not $hs) { continue }
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem $hs
+        $item.Tag = @{ Host = $hs }
+        $item.Add_Click({ param($s, $e) Set-Transport $s.Tag.Host })
+        [void]$script:menuTransport.DropDownItems.Add($item)
+    }
+    [void]$script:menuTransport.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+    $miAdd = New-Object System.Windows.Forms.ToolStripMenuItem 'Add server IP...'
+    $miAdd.Add_Click({ Add-TransportEndpoint })
+    [void]$script:menuTransport.DropDownItems.Add($miAdd)
+    $miEdit = New-Object System.Windows.Forms.ToolStripMenuItem 'Edit current IP...'
+    $miEdit.Add_Click({ Edit-CurrentEndpoint })
+    [void]$script:menuTransport.DropDownItems.Add($miEdit)
+    $miRm = New-Object System.Windows.Forms.ToolStripMenuItem 'Remove current IP'
+    $miRm.Add_Click({ Remove-TransportEndpoint })
+    [void]$script:menuTransport.DropDownItems.Add($miRm)
+    Update-TransportChecks
+}
+
+# Add a server IP and switch to it. Lets you use a new network without editing the config file.
+function Add-TransportEndpoint {
+    $ip = [Microsoft.VisualBasic.Interaction]::InputBox('Server IP address:', 'Hermes - add server IP', '')
+    if ([string]::IsNullOrWhiteSpace($ip)) { return }
+    $ip = $ip.Trim()
+    if (@($script:Hosts) -notcontains $ip) { $script:Hosts += $ip }
+    Save-Config
+    Rebuild-TransportMenu
+    Set-Transport $ip
+}
+
+# Change the currently-selected server IP (e.g. the phone's IP on a different network).
+function Edit-CurrentEndpoint {
+    $ip = [Microsoft.VisualBasic.Interaction]::InputBox('New server IP address:', 'Hermes - edit server IP', $script:HOST_IP)
+    if ([string]::IsNullOrWhiteSpace($ip)) { return }
+    $ip = $ip.Trim()
+    $script:Hosts = @(@($script:Hosts) | ForEach-Object { if ($_ -eq $script:HOST_IP) { $ip } else { $_ } })
+    if (@($script:Hosts) -notcontains $ip) { $script:Hosts += $ip }
+    Save-Config
+    Rebuild-TransportMenu
+    Set-Transport $ip
+}
+
+# Remove the currently-selected server IP and switch to the first remaining one.
+function Remove-TransportEndpoint {
+    $remaining = @(@($script:Hosts) | Where-Object { $_ -ne $script:HOST_IP })
+    if ($remaining.Count -eq 0) { Write-Log 'Cannot remove the only server IP.' 'DarkYellow'; return }
+    $removed = $script:HOST_IP
+    $script:Hosts = $remaining
+    Save-Config
+    Rebuild-TransportMenu
+    Set-Transport ([string]$remaining[0])
+    Write-Log "Removed server IP '$removed'." 'Cyan'
+}
+
+# Tray icon reflects the true state: red while dictating, else green when connected to the phone,
+# else grey. "Connected" is the same live-socket test Ensure-Connected uses.
+function Update-TrayIcon {
+    $connected = ($global:tcpClient -and $global:tcpClient.Connected)
+    if ($script:isListening) {
         $script:notify.Icon = $global:IconRec
         $script:notify.Text = 'Project Hermes - Listening...'
-        $script:itemStatus.Text = 'Status: Listening...'
+    } elseif ($connected) {
+        $script:notify.Icon = $global:IconConnected
+        $script:notify.Text = "Project Hermes - Connected ($script:Mode)"
     } else {
-        $script:notify.Icon = $global:IconIdle
-        $script:notify.Text = "Project Hermes - Ready ($script:Mode)"
-        $script:itemStatus.Text = 'Status: Ready'
+        $script:notify.Icon = $global:IconDisconnected
+        $script:notify.Text = 'Project Hermes - Disconnected'
     }
+}
+
+function Set-ListeningState($listening) {
+    $script:isListening = $listening
+    $script:itemStatus.Text = if ($listening) { 'Status: Listening...' } else { 'Status: Ready' }
+    Update-TrayIcon
 }
 Update-ModeChecks
 Update-MicChecks
 Update-OverlayCheck
+Update-MdnsCheck
+Rebuild-TransportMenu
 
 # --- Dictation overlay (HUD, REQ-FUNC-014) -------------------------------------
 # A dark, semi-transparent bar at the bottom-centre of the primary screen that visualises a live
@@ -322,8 +450,9 @@ function New-RoundedRegion([int]$w, [int]$h, [int]$r) {
 function Get-OverlayLabel {
     switch ($script:ovState) {
         'Listening'  { 'Listening…' }
-        'Finalizing' { 'Transcribing…' }
-        'Error'      { 'Error' }
+        'Finalizing'   { 'Transcribing…' }
+        'Disconnected' { 'Not connected' }
+        'Error'        { 'Error' }
         default      { '' }        # Final / Info / Idle carry no label
     }
 }
@@ -561,6 +690,19 @@ function Set-OverlayError([string]$msg) {
     $script:overlay.Invalidate()
 }
 
+# Shown when dictation is attempted while the phone is not connected (grey dot, "Not connected").
+function Set-OverlayDisconnected([string]$msg) {
+    if (-not $script:OverlayEnabled) { return }
+    Initialize-Overlay
+    $script:ovState         = 'Disconnected'
+    $script:ovText          = [string]$msg
+    $script:ovOpacityTarget = $script:OV_OPACITY
+    $script:ovHideAt        = [Environment]::TickCount + 2500
+    Update-OverlayBounds
+    Show-OverlayWindow
+    $script:overlay.Invalidate()
+}
+
 # Begin an immediate fade-out (the ticker parks the window once hidden). Safe to call when the
 # overlay was never created or is already hidden.
 function Hide-Overlay {
@@ -618,17 +760,18 @@ function Close-Transport {
     try { if ($global:stream)    { $global:stream.Dispose() } }  catch {}
     try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}
     $global:writer = $null; $global:stream = $null; $global:tcpClient = $null
+    Update-TrayIcon   # reflect the now-disconnected state (grey) unless dictating
 }
 
-function Try-Connect {
-    # Non-blocking connect bounded by $script:ConnectTimeoutMs. Unlike the blocking
+function Try-Connect($tryHost) {
+    # Non-blocking connect to $tryHost bounded by $script:ConnectTimeoutMs. Unlike the blocking
     # TcpClient(host, port) constructor -- which parks the WinForms message pump for the full
     # ~20s OS timeout on an unreachable host (the original tray "freeze") -- this drives
     # BeginConnect and pumps DoEvents while it waits, so the tray stays responsive.
     $client = New-Object System.Net.Sockets.TcpClient
     $client.NoDelay = $true
     try {
-        $iar = $client.BeginConnect($HOST_IP, $PORT, $null, $null)
+        $iar = $client.BeginConnect($tryHost, $PORT, $null, $null)
         $deadline = [Environment]::TickCount + $script:ConnectTimeoutMs
         while (-not $iar.AsyncWaitHandle.WaitOne(50)) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -649,35 +792,143 @@ function Try-Connect {
     # complete lines behind $stream.DataAvailable.
     $global:writer = New-Object System.IO.StreamWriter($global:stream)
     $global:writer.AutoFlush = $true
-    $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (connected)"
+    $script:itemServer.Text = "Server: ${tryHost}:${PORT} (connected)"
     Send-SetMic $script:MicPref   # sync the mic preference to the phone on (re)connect
-    Write-Log "Connected to Android transport server at ${HOST_IP}:${PORT}" 'Green'
+    Write-Log "Connected to Android transport server at ${tryHost}:${PORT}" 'Green'
     return $true
 }
 
+# --- mDNS (DNS-SD) discovery of the phone ------------------------------------
+# Advance past a DNS name at [pos], handling label sequences and 0xC0 compression pointers.
+function Skip-DnsName([byte[]]$buf, [int]$pos) {
+    while ($pos -lt $buf.Length) {
+        $len = $buf[$pos]
+        if ($len -eq 0) { return $pos + 1 }
+        if (($len -band 0xC0) -eq 0xC0) { return $pos + 2 }
+        $pos += 1 + $len
+    }
+    return $pos
+}
+
+# Return ALL IPv4 (A record) addresses found in a DNS/mDNS response. A multi-homed phone lists
+# every interface IP (Wi-Fi, tether, tunnel); we try them all rather than guessing the first.
+function Get-AllARecords([byte[]]$buf) {
+    $ips = New-Object System.Collections.Generic.List[string]
+    if ($buf.Length -lt 12) { return $ips }
+    $qd  = ($buf[4] -shl 8) -bor $buf[5]
+    $rec = (($buf[6] -shl 8) -bor $buf[7]) + (($buf[8] -shl 8) -bor $buf[9]) + (($buf[10] -shl 8) -bor $buf[11])
+    $pos = 12
+    for ($i = 0; $i -lt $qd; $i++) { $pos = Skip-DnsName $buf $pos; $pos += 4 }
+    for ($i = 0; $i -lt $rec; $i++) {
+        $pos = Skip-DnsName $buf $pos
+        if (($pos + 10) -gt $buf.Length) { break }
+        $type  = ($buf[$pos] -shl 8) -bor $buf[$pos + 1]
+        $rdlen = ($buf[$pos + 8] -shl 8) -bor $buf[$pos + 9]
+        $pos += 10
+        if ($type -eq 1 -and $rdlen -eq 4 -and ($pos + 4) -le $buf.Length) {
+            $ip = "$($buf[$pos]).$($buf[$pos+1]).$($buf[$pos+2]).$($buf[$pos+3])"
+            if ($ip -ne '0.0.0.0' -and -not $ips.Contains($ip)) { $ips.Add($ip) }
+        }
+        $pos += $rdlen
+    }
+    return $ips
+}
+
+# Query mDNS for _hermes._tcp.local and return the phone's advertised IPv4 addresses (may be
+# several on a multi-homed phone). Uses the QU (unicast-response) bit so the reply comes back to
+# our ephemeral port (no 5353 bind / group join needed). Best-effort: failure/timeout -> empty.
+function Resolve-HermesMdns {
+    $found = New-Object System.Collections.Generic.List[string]
+    $udp = $null
+    try {
+        $ms = New-Object System.IO.MemoryStream
+        $bw = New-Object System.IO.BinaryWriter($ms)
+        foreach ($b in @(0,0, 0,0, 0,1, 0,0, 0,0, 0,0)) { $bw.Write([byte]$b) }   # header: 1 question
+        foreach ($label in @('_hermes','_tcp','local')) {
+            $lb = [System.Text.Encoding]::ASCII.GetBytes($label)
+            $bw.Write([byte]$lb.Length); $bw.Write($lb)
+        }
+        $bw.Write([byte]0)                          # end of QNAME
+        $bw.Write([byte]0);    $bw.Write([byte]12)  # QTYPE  = PTR (12)
+        $bw.Write([byte]0x80); $bw.Write([byte]1)   # QCLASS = IN with QU (unicast-response) bit
+        $bw.Flush()
+        $query = $ms.ToArray()
+
+        $udp = New-Object System.Net.Sockets.UdpClient
+        $udp.Client.SetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::ReuseAddress, $true)
+        $udp.Client.ReceiveTimeout = 300
+        $mcast = New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Parse('224.0.0.251'), 5353)
+        [void]$udp.Send($query, $query.Length, $mcast)
+
+        $deadline = [Environment]::TickCount + 900
+        while ([Environment]::TickCount -lt $deadline) {
+            try {
+                $remote = New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Any, 0)
+                $resp = $udp.Receive([ref]$remote)
+            } catch { break }   # ReceiveTimeout -> stop waiting
+            $recs = Get-AllARecords $resp
+            if ($recs.Count -gt 0) {
+                foreach ($ip in $recs) { if (-not $found.Contains($ip)) { $found.Add($ip) } }
+                break   # first response with A records usually lists all of the phone's addresses
+            }
+        }
+    } catch {
+        # setup/socket error -> no result
+    } finally {
+        try { if ($udp) { $udp.Close() } } catch {}
+    }
+    return $found
+}
+
+# Ordered, de-duplicated connect candidates: every mDNS-discovered IP first (if enabled), then the
+# configured host list, then the current host as a final fallback. Try-Connect picks the reachable one.
+function Get-ConnectCandidates {
+    $list = New-Object System.Collections.Generic.List[string]
+    if ($script:MdnsEnabled) {
+        foreach ($m in Resolve-HermesMdns) {
+            $s = [string]$m
+            if ($s -and -not $list.Contains($s)) { $list.Add($s) }
+        }
+        if ($list.Count -gt 0) { Write-Log "mDNS discovered: $($list -join ', ')" 'DarkCyan' }
+    }
+    foreach ($h in @($script:Hosts)) {
+        $s = [string]$h
+        if ($s -and -not $list.Contains($s)) { $list.Add($s) }
+    }
+    if ($script:HOST_IP -and -not $list.Contains([string]$script:HOST_IP)) { $list.Add([string]$script:HOST_IP) }
+    return $list
+}
+
 function Ensure-Connected {
-    # Called once per main-loop iteration. Non-blocking: returns immediately while backing off,
-    # and makes at most one bounded connect attempt per interval, so an unreachable phone never
-    # freezes the tray. Backoff grows to $script:BackoffMaxMs and resets on success.
+    # Called once per main-loop iteration. Non-blocking: returns immediately while backing off, and
+    # makes at most one connect cycle per interval, so an unreachable phone never freezes the tray.
+    # A cycle tries mDNS first, then each configured endpoint, connecting to the first that answers.
     if ($global:tcpClient -and $global:tcpClient.Connected) { return $true }
     if ([Environment]::TickCount -lt $script:NextConnectAt) { return $false }
 
     if (-not $script:AnnouncedConnecting) {
-        Write-Log "Connecting to Android transport server at ${HOST_IP}:${PORT} (auto-retrying with backoff)..." 'DarkYellow'
+        Write-Log "Connecting to the phone (mDNS, then configured transports; auto-retrying)..." 'DarkYellow'
         $script:AnnouncedConnecting = $true
     }
-    $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (connecting...)"
     if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Connecting...' }
 
-    if (Try-Connect) {
-        $script:BackoffMs = $script:BackoffMinMs
-        $script:AnnouncedConnecting = $false
-        if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Ready' }
-        return $true
+    foreach ($cand in Get-ConnectCandidates) {
+        if ($script:ShouldExit) { break }
+        $script:itemServer.Text = "Server: ${cand}:${PORT} (connecting...)"
+        if (Try-Connect $cand) {
+            $script:HOST_IP = $cand
+            $script:BackoffMs = $script:BackoffMinMs
+            $script:AnnouncedConnecting = $false
+            Update-TransportChecks
+            Update-TrayIcon
+            if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Ready' }
+            return $true
+        }
     }
 
     $script:NextConnectAt = [Environment]::TickCount + $script:BackoffMs
     $script:BackoffMs = [Math]::Min($script:BackoffMs * 2, $script:BackoffMaxMs)
+    Update-TrayIcon
     return $false
 }
 
@@ -726,7 +977,9 @@ function Set-ForceForeground($hWnd) {
     }
 
     [Win32Input]::BringWindowToTop($hWnd) | Out-Null
-    [Win32Input]::ShowWindow($hWnd, $SW_RESTORE) | Out-Null
+    # Do NOT SW_RESTORE unconditionally: on a *maximized* target that un-maximizes it (the window
+    # appears to "minimize"/shrink right after paste). A *minimized* target was already restored
+    # above (guarded by IsIconic); a maximized/normal target is brought forward by SetForegroundWindow.
     $ok = [Win32Input]::SetForegroundWindow($hWnd)
 
     if ($attachedTarget) { [Win32Input]::AttachThreadInput($curThread, $targetThread, $false) | Out-Null }
@@ -753,6 +1006,13 @@ function Send-Win32Paste {
 # --- Dictation control ---------------------------------------------------------
 function Start-Dictation {
     if ($script:isListening) { return }
+    # Never show "Listening" when the phone isn't connected -- nothing can be dictated. Indicate
+    # the connection state in the overlay instead and bail out. (fix 2)
+    if (-not ($global:tcpClient -and $global:tcpClient.Connected)) {
+        Set-OverlayDisconnected 'Not connected to phone'
+        Write-Log 'Dictation ignored: not connected to the phone.' 'DarkYellow'
+        return
+    }
     $fg = [Win32Input]::GetForegroundWindow()
     if ($fg.ToInt64() -ne 0 -and $fg.ToInt64() -ne $script:consoleHwnd.ToInt64()) {
         $script:targetHwnd = $fg

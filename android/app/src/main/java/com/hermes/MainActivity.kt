@@ -7,6 +7,7 @@ import android.content.res.ColorStateList
 import android.os.Bundle
 import android.widget.ImageView
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.annotation.ColorRes
 import androidx.appcompat.app.AppCompatActivity
@@ -63,6 +64,23 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(AndroidSpeechEngine.KEY_PREFER_OFFLINE, !isChecked).apply()
             logEvent(if (isChecked) "Recognition mode: ONLINE (higher accuracy)" else "Recognition mode: OFFLINE (private)")
         }
+
+        // Start/stop audible cue volume (0..100, 0 = off) — quieter for office use. (REQ-FUNC-017)
+        val labelCue = findViewById<TextView>(R.id.label_cue)
+        val seekCue = findViewById<SeekBar>(R.id.seek_cue_volume)
+        val cueVol = prefs.getInt(AndroidSpeechEngine.KEY_CUE_VOLUME, AndroidSpeechEngine.DEFAULT_CUE_VOLUME).coerceIn(0, 100)
+        seekCue.progress = cueVol
+        labelCue.text = cueLabel(cueVol)
+        seekCue.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                labelCue.text = cueLabel(progress)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                prefs.edit().putInt(AndroidSpeechEngine.KEY_CUE_VOLUME, sb.progress).apply()
+                logEvent("Cue volume: ${if (sb.progress == 0) "off" else "${sb.progress}%"}")
+            }
+        })
 
         // Transport selection: which underlying transport(s) the service is allowed to listen on.
         val switchWifi = findViewById<MaterialSwitch>(R.id.switch_wifi)
@@ -226,5 +244,10 @@ class MainActivity : AppCompatActivity() {
     private fun clearLog() {
         consoleText.text = ""
         logEvent("Console cleared.")
+    }
+
+    private fun cueLabel(v: Int): String {
+        val base = getString(R.string.label_cue_volume)
+        return if (v <= 0) "$base: off" else "$base: $v%"
     }
 }
