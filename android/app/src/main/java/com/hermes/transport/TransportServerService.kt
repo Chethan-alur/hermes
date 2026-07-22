@@ -53,12 +53,28 @@ class TransportServerService : Service() {
         data class Specific(val address: InetAddress) : BindTarget
     }
 
+    /**
+     * What the service is currently doing. Exactly one plan is active at a time. [Serve] is the
+     * default phone-as-server behaviour; [Dial] is reverse-connect (the phone dials the Windows
+     * client), used where only outbound connections from the phone are permitted. (REQ-FUNC-018)
+     */
+    private sealed interface Plan {
+        object Idle : Plan
+        data class Serve(val bind: BindTarget) : Plan
+        data class Dial(val hosts: List<String>, val port: Int) : Plan
+    }
+
     // --- Serving state -----------------------------------------------------------
     @Volatile private var serviceAlive = false
     private var serverSocket: ServerSocket? = null
     private var serverThread: Thread? = null
-    private var currentTarget: BindTarget? = null
+    private var currentPlan: Plan = Plan.Idle
     private var speechEngine: SpeechEngine? = null
+
+    // Reverse-connect (dial-out) state. (REQ-FUNC-018)
+    @Volatile private var dialAlive = false
+    private var dialThread: Thread? = null
+    @Volatile private var dialSocket: Socket? = null
 
     // mDNS/DNS-SD advertising so the Windows client can auto-discover the phone. (REQ-FUNC-016)
     private var nsdManager: NsdManager? = null
@@ -140,7 +156,7 @@ class TransportServerService : Service() {
             getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback)
         } catch (_: Exception) {}
         try { unregisterReceiver(usbStateReceiver) } catch (_: Exception) {}
-        stopServing()
+        stopActivity()
         speechEngine?.destroy()
         speechEngine = null
         senderExecutor.shutdown()
@@ -238,29 +254,111 @@ class TransportServerService : Service() {
         val usbAddr = usbAddress
         val serveUsb = sel.usb && usbTetherUp && usbAddr != null
 
-        val desired: BindTarget? = when {
+        // Reverse-connect: dial the Windows client over whatever network is up. It takes precedence
+        // over serving when enabled and a target host is configured, because the topologies that need
+        // it (full-tunnel VPN client isolation) are exactly those where inbound serving cannot work.
+        val rev = TransportPrefs.readReverse(this)
+        val anyNetwork = wifiAvailable || cellularAvailable || usbTetherUp
+
+        val desired: Plan = when {
+            rev.active && anyNetwork -> Plan.Dial(rev.hosts, rev.port)
             // Network (possibly WireGuard tunnel) → bind wildcard so the tun interface is covered.
-            serveNetwork -> BindTarget.Wildcard
+            serveNetwork -> Plan.Serve(BindTarget.Wildcard)
             // USB tethering only → confine serving to the usb0 address (no exposure on Wi-Fi/cellular).
-            serveUsb -> BindTarget.Specific(usbAddr!!)
-            else -> null
+            serveUsb -> Plan.Serve(BindTarget.Specific(usbAddr!!))
+            else -> Plan.Idle
         }
 
-        if (applyBind(desired)) {
+        if (apply(desired)) {
             Log.i(TAG, "reconcile: wifi=$wifiAvailable cell=$cellularAvailable usb=$usbTetherUp " +
+                    "rev=[on=${rev.enabled} hosts=${rev.hosts.size}] " +
                     "sel=[wifi=${sel.wifi} mobile=${sel.mobile} usb=${sel.usb}] -> ${describe(desired)}")
         }
         updateNotification()
     }
 
-    /** Apply the desired bind target. Returns true if the serving state changed. */
-    private fun applyBind(desired: BindTarget?): Boolean {
-        if (desired == currentTarget) return false
-        stopServing()
-        // Latch currentTarget only on a successful bind, so a failed bind (e.g. the usb0 address
-        // vanished mid-reconcile) is retried on the next signal rather than stuck.
-        currentTarget = if (desired != null && !startServing(desired)) null else desired
+    /** Switch to the desired plan. Returns true if the plan changed. */
+    private fun apply(desired: Plan): Boolean {
+        if (desired == currentPlan) return false
+        stopActivity()
+        // Latch the plan only when it actually starts: a failed Serve bind (e.g. the usb0 address
+        // vanished mid-reconcile) falls back to Idle so it is retried on the next signal.
+        currentPlan = when (desired) {
+            Plan.Idle -> Plan.Idle
+            is Plan.Serve -> if (startServing(desired.bind)) desired else Plan.Idle
+            is Plan.Dial -> { startDialing(desired.hosts, desired.port); desired }
+        }
         return true
+    }
+
+    /** Tear down whichever activity (serve or dial) is currently running. */
+    private fun stopActivity() {
+        stopServing()
+        stopDialing()
+    }
+
+    // --- Reverse-connect: dial the Windows client (REQ-FUNC-018) -----------------
+
+    private fun startDialing(hosts: List<String>, port: Int) {
+        dialAlive = true
+        val t = Thread { dialLoop(hosts, port) }
+        dialThread = t
+        t.start()
+        Log.i(TAG, "Reverse-connect: dialing ${hosts.joinToString(", ")} (port $port)")
+    }
+
+    private fun stopDialing() {
+        if (!dialAlive && dialThread == null) return
+        dialAlive = false
+        val s = dialSocket
+        dialSocket = null
+        // Closing the active socket unblocks a parked readLine() in handleClientConnection (or an
+        // in-progress connect), so the dial loop observes dialAlive=false and exits promptly.
+        try { s?.close() } catch (_: Exception) {}
+        dialThread = null
+    }
+
+    /** Split a host token that may carry an explicit `:port`, else fall back to [defaultPort]. */
+    private fun hostPort(token: String, defaultPort: Int): Pair<String, Int> {
+        val idx = token.lastIndexOf(':')
+        if (idx > 0 && idx < token.length - 1) {
+            val p = token.substring(idx + 1).toIntOrNull()
+            if (p != null && p in 1..65535) return token.substring(0, idx) to p
+        }
+        return token to defaultPort
+    }
+
+    private fun dialLoop(hosts: List<String>, port: Int) {
+        var backoff = 1000L
+        while (serviceAlive && dialAlive) {
+            var connected = false
+            for (token in hosts) {
+                if (!serviceAlive || !dialAlive) break
+                val (host, p) = hostPort(token, port)
+                val socket = try {
+                    Socket().apply { connect(InetSocketAddress(host, p), 3000) }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Reverse-connect dial to $host:$p failed: ${e.message}")
+                    null
+                }
+                if (socket != null) {
+                    connected = true
+                    backoff = 1000L
+                    dialSocket = socket
+                    Log.i(TAG, "Reverse-connect: connected to $host:$p")
+                    // Same frame protocol as a served connection: heartbeat, transcript writer,
+                    // command reader. Blocks until the connection drops.
+                    handleClientConnection(socket)
+                    dialSocket = null
+                    Log.i(TAG, "Reverse-connect: connection to $host:$p closed")
+                    break
+                }
+            }
+            if (!serviceAlive || !dialAlive) break
+            try { Thread.sleep(if (connected) 500L else backoff) } catch (_: Exception) {}
+            if (!connected) backoff = (backoff * 2).coerceAtMost(15000L)
+        }
+        Log.i(TAG, "Reverse-connect dial loop exited.")
     }
 
     private fun stopServing() {
@@ -520,16 +618,22 @@ class TransportServerService : Service() {
 
     // --- Notification ------------------------------------------------------------
 
-    private fun describe(target: BindTarget?): String = when (target) {
-        null -> "idle (no selected transport available)"
-        BindTarget.Wildcard -> "listening on 0.0.0.0:$PORT"
-        is BindTarget.Specific -> "listening on USB ${target.address.hostAddress}:$PORT"
+    private fun describe(plan: Plan): String = when (plan) {
+        Plan.Idle -> "idle (no selected transport available)"
+        is Plan.Serve -> when (val b = plan.bind) {
+            BindTarget.Wildcard -> "listening on 0.0.0.0:$PORT"
+            is BindTarget.Specific -> "listening on USB ${b.address.hostAddress}:$PORT"
+        }
+        is Plan.Dial -> "reverse-connect: dialing ${plan.hosts.joinToString(", ")} (port ${plan.port})"
     }
 
-    private fun currentServingText(): String = when (val t = currentTarget) {
-        null -> "Idle — no selected transport available"
-        BindTarget.Wildcard -> "Listening on port $PORT (selected transports)"
-        is BindTarget.Specific -> "Listening on USB ${t.address.hostAddress}:$PORT"
+    private fun currentServingText(): String = when (val p = currentPlan) {
+        Plan.Idle -> "Idle — no selected transport available"
+        is Plan.Serve -> when (val b = p.bind) {
+            BindTarget.Wildcard -> "Listening on port $PORT (selected transports)"
+            is BindTarget.Specific -> "Listening on USB ${b.address.hostAddress}:$PORT"
+        }
+        is Plan.Dial -> "Reverse-connect: dialing ${p.hosts.joinToString(", ")}"
     }
 
     private fun updateNotification() {

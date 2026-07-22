@@ -262,6 +262,41 @@
                         android:layout_marginStart="4dp"
                         android:text="@string/label_listen_usb"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="14dp"
+                        android:background="?android:attr/listDivider" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switch_reverse"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/label_reverse"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <EditText
+                        android:id="@+id/edit_reverse_host"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginStart="4dp"
+                        android:hint="@string/hint_reverse_host"
+                        android:inputType="textNoSuggestions"
+                        android:maxLines="1"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/help_reverse"
+                        android:textSize="12sp"
+                        android:textColor="?android:attr/textColorSecondary" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

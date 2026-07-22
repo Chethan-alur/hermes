@@ -24,6 +24,7 @@ Copy-Item (Join-Path $srcDir 'hermes_launcher.vbs') (Join-Path $destDir 'hermes_
 $srcCfg   = Join-Path $srcDir  'hermes.config.json'
 $destCfg  = Join-Path $destDir 'hermes.config.json'
 $destHost = '127.0.0.1'; $destPort = 9999
+$destListen = $false; $destListenPort = 9999   # reverse-connect listen mode (REQ-FUNC-018)
 # Default the connection to whatever the source (repo) config specifies -- e.g. the phone's
 # current USB-tether IP -- so a fresh install does not silently fall back to 127.0.0.1 and hang.
 if (Test-Path $srcCfg) {
@@ -39,9 +40,12 @@ if (Test-Path $destCfg) {
         $existing = Get-Content $destCfg -Raw | ConvertFrom-Json
         if ($existing.host) { $destHost = [string]$existing.host }
         if ($existing.port) { $destPort = [int]$existing.port }
+        # Preserve the user's reverse-connect listen-mode setting across reinstalls.
+        if ($null -ne $existing.listen) { $destListen = [bool]$existing.listen }
+        if ($existing.listenPort)       { $destListenPort = [int]$existing.listenPort }
     } catch {}
 }
-([ordered]@{ mode = 'PushToTalk'; host = $destHost; port = $destPort; hotkeys = @(163) } | ConvertTo-Json) |
+([ordered]@{ mode = 'PushToTalk'; host = $destHost; port = $destPort; hotkeys = @(163); listen = $destListen; listenPort = $destListenPort } | ConvertTo-Json) |
     Set-Content -Path $destCfg -Encoding UTF8
 
 $launcher = Join-Path $destDir 'hermes_launcher.vbs'
@@ -63,6 +67,19 @@ $startupLnk  = Join-Path $startup  'Project Hermes.lnk'
 $programsLnk = Join-Path $programs 'Project Hermes.lnk'
 New-HermesShortcut $startupLnk
 New-HermesShortcut $programsLnk
+
+# Allow the phone to dial in for reverse-connect "listen mode" (REQ-FUNC-018). Best-effort: this
+# needs elevation, so if it fails the tray still works -- Windows simply prompts to allow the app on
+# the first inbound connection instead.
+try {
+    Get-NetFirewallRule -DisplayName 'Project Hermes (listen mode)' -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName 'Project Hermes (listen mode)' -Direction Inbound -Action Allow `
+        -Protocol TCP -LocalPort $destListenPort -Profile Any -ErrorAction Stop | Out-Null
+    Write-Host "Firewall: inbound TCP $destListenPort allowed for listen mode." -ForegroundColor Gray
+} catch {
+    Write-Host "Firewall rule not added (run as admin to pre-authorise, or allow the prompt on first connect)." -ForegroundColor DarkYellow
+}
 
 # Stop any currently running instance, then launch the freshly installed one.
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" 2>$null |

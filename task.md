@@ -97,5 +97,24 @@ Note: repo `windows/hermes_hotkey.ps1` picker change is UNCOMMITTED.
 - Config simplified per user: named `transports` map -> plain `hosts` IP list (tray "Server" submenu; Add/Edit/Remove IP; auto-migrates old config). mDNS now returns ALL A records (multi-homed).
 - KNOWN ISSUE (not a bind-family bug): wildcard serving refuses the **USB-tether** IP due to an Android tether reverse-routing/source-address quirk (SYN-ACK egresses the default network) — WireGuard/Wi-Fi over the same wildcard connect fine; USB needs USB-only (Specific bind). `ServerSocketChannel.open(INET)` fix needs compileSdk 35 (only 34 installed). Deferred.
 
+## Track K — Reverse-connect transport mode (phone dials the PC) (REQ-FUNC-018) [user request]
+Plan: the full-tunnel office VPN enforces stateful client isolation — laptop→phone is impossible at
+every phone address (VPN pool 10.212.134.150, NAT 10.141.1.254), but **phone→laptop 10.141.1.47
+connects** (phone NAT'd to 10.141.1.254; empirically verified this session). So invert the TCP
+direction: the phone dials the Windows client, which listens. Data flow (phone→PC transcripts,
+PC→phone commands) and all v1 frames are unchanged — no protocol/schema change (Rule 5 steps 3–4 =
+no change, documented). Governance: RTM REQ-FUNC-018; Android pure helper unit-tested; Windows UI
+manually verified on the host.
+- [x] K1. RTM REQ-FUNC-018 + task.md track
+- [x] K2. `TransportPrefs.kt`: `reverse_connect` (bool), `reverse_hosts` (string), `reverse_port` (int, 9999) + pure `parseReverseHosts` helper
+- [x] K3. `TransportServerService.kt`: `Plan` sealed type (Idle/Serve/Dial); `reconcile` chooses Dial when reverse-connect on + hosts set + a network is up; `dialLoop` connects out and runs `handleClientConnection` with backoff; no mDNS in dial mode
+- [x] K4. Android UI: `switch_reverse` + PC-host `EditText` in MainActivity/activity_main.xml/strings; persist + `reconfigureService`
+- [x] K5. JUnit `UT-AND-REVERSEHOSTS-001` (`parseReverseHosts`): comma/space/semicolon split, trim, de-dup, ip:port tolerated — 5/5 pass
+- [x] K6. `hermes_hotkey.ps1`: config `listen`/`listenPort`; `$script:ListenEnabled`/`$script:ListenPort`; tray toggle "Listen mode (phone dials in)" (`Set-ListenEnabled`/`Update-ListenCheck`); `Ensure-Listening` (TcpListener + `Pending()`/`AcceptTcpClient` -> the three socket globals); `Ensure-Connected` branches to it; `Stop-Listener`; disconnect/cleanup listener-aware. Structural check: braces 384/384, parens 660/660, here-strings 2/2
+- [x] K7. `install_hermes.ps1`: idempotent inbound TCP firewall rule for the listen port (elevated, best-effort) + preserve `listen`/`listenPort` across reinstalls
+- [x] K8. Build: Android unit tests 20/20 (incl. parseReverseHosts 5/5) + `assembleDebug` green; `adb install -r` OK
+- [x] K9. Live verify Android dial-out against a host TCP listener: phone dialed 10.141.1.47:9999 over the office VPN (peer 10.141.1.254), sent the heartbeat, honoured `start_listening` (ListeningStarted), replied with a `status` frame. Full v1 protocol confirmed over the inverted connection.
+- [ ] K10. (Manual, Windows host — `pwsh` unavailable under WSL) deploy tray, enable Listen mode, enable phone reverse-connect (host 10.141.1.47), confirm the phone dials in and PTT dictation pastes; firewall allowed
+
 Note: canonical test invocation is `python3 -m unittest discover -s tests -p "test_*.py"` (all 13 pass).
 Discovering from `-s tests/unit` fails spuriously — `tests/unit/windows/` shadows the real top-level `windows/` package. Use `-s tests`.

@@ -25,4 +25,8 @@
     <string name="label_listen_wifi">Wi-Fi</string>
     <string name="label_listen_mobile">Mobile data</string>
     <string name="label_listen_usb">USB (tethering)</string>
+
+    <string name="label_reverse">Connect to PC (phone dials in)</string>
+    <string name="hint_reverse_host">PC IP address, e.g. 10.141.1.47</string>
+    <string name="help_reverse">Use when the network only allows the phone to connect out (e.g. a corporate VPN). The PC must be in Listen mode.</string>
 </resources>

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.os.Bundle
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -92,6 +93,32 @@ class MainActivity : AppCompatActivity() {
         switchWifi.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_WIFI, c, "Wi-Fi") }
         switchMobile.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_MOBILE, c, "Mobile data") }
         switchUsb.setOnCheckedChangeListener { _, c -> onTransportToggle(TransportPrefs.KEY_LISTEN_USB, c, "USB tethering") }
+
+        // Reverse-connect: the phone dials the PC (which listens). For VPNs that only allow the phone
+        // to connect out. (REQ-FUNC-018)
+        val switchReverse = findViewById<MaterialSwitch>(R.id.switch_reverse)
+        val editReverseHost = findViewById<EditText>(R.id.edit_reverse_host)
+        switchReverse.isChecked = prefs.getBoolean(TransportPrefs.KEY_REVERSE_CONNECT, false)
+        editReverseHost.setText(prefs.getString(TransportPrefs.KEY_REVERSE_HOSTS, "") ?: "")
+        switchReverse.setOnCheckedChangeListener { _, c ->
+            prefs.edit()
+                .putBoolean(TransportPrefs.KEY_REVERSE_CONNECT, c)
+                .putString(TransportPrefs.KEY_REVERSE_HOSTS, editReverseHost.text.toString())
+                .apply()
+            val hosts = TransportPrefs.parseReverseHosts(editReverseHost.text.toString())
+            logEvent("Reverse-connect (phone dials PC): ${if (c) "ENABLED -> ${hosts.joinToString(", ")}" else "disabled"}")
+            reconfigureService()
+            refreshServingAddresses()
+        }
+        editReverseHost.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                prefs.edit().putString(TransportPrefs.KEY_REVERSE_HOSTS, editReverseHost.text.toString()).apply()
+                if (switchReverse.isChecked) {
+                    logEvent("Reverse-connect target: ${TransportPrefs.parseReverseHosts(editReverseHost.text.toString()).joinToString(", ")}")
+                    reconfigureService()
+                }
+            }
+        }
 
         checkPermissions()
         speechEngine = AndroidSpeechEngine(this)

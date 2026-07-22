@@ -114,7 +114,7 @@ function Write-Log {
 
 # --- Configuration -------------------------------------------------------------
 function Load-Config {
-    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163); mic = 'auto'; overlay = $true; mdns = $true; hosts = @() }  # 163 = Right Ctrl
+    $cfg = [ordered]@{ mode = 'PushToTalk'; host = '127.0.0.1'; port = 9999; hotkeys = @(163); mic = 'auto'; overlay = $true; mdns = $true; hosts = @(); listen = $false; listenPort = 9999 }  # 163 = Right Ctrl
     if (Test-Path $global:ConfigPath) {
         try {
             $j = Get-Content $global:ConfigPath -Raw | ConvertFrom-Json
@@ -126,6 +126,9 @@ function Load-Config {
             # $null check (not truthiness) so an explicit overlay=false is honoured, not treated as "absent".
             if ($null -ne $j.overlay) { $cfg.overlay = [bool]$j.overlay }
             if ($null -ne $j.mdns)    { $cfg.mdns = [bool]$j.mdns }
+            # Reverse-connect "listen mode": the tray listens and the phone dials in. (REQ-FUNC-018)
+            if ($null -ne $j.listen)  { $cfg.listen = [bool]$j.listen }
+            if ($j.listenPort)        { $cfg.listenPort = [int]$j.listenPort }
             # Candidate server IPs to try (after mDNS). Plain list; migrate the old named-transport map.
             if ($j.hosts) {
                 $cfg.hosts = @($j.hosts | ForEach-Object { [string]$_ } | Where-Object { $_ })
@@ -140,7 +143,7 @@ function Load-Config {
 }
 
 function Save-Config {
-    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST; mic = $script:MicPref; overlay = $script:OverlayEnabled; mdns = $script:MdnsEnabled; hosts = @($script:Hosts) }
+    $obj = [ordered]@{ mode = $script:Mode; host = $HOST_IP; port = $PORT; hotkeys = $VK_LIST; mic = $script:MicPref; overlay = $script:OverlayEnabled; mdns = $script:MdnsEnabled; hosts = @($script:Hosts); listen = $script:ListenEnabled; listenPort = $script:ListenPort }
     try { ($obj | ConvertTo-Json -Depth 5) | Set-Content -Path $global:ConfigPath -Encoding UTF8 } catch {}
 }
 
@@ -152,6 +155,8 @@ $script:Mode           = $cfg.mode
 $script:MicPref        = $cfg.mic
 $script:OverlayEnabled = [bool]$cfg.overlay
 $script:MdnsEnabled    = [bool]$cfg.mdns
+$script:ListenEnabled  = [bool]$cfg.listen
+$script:ListenPort     = [int]$cfg.listenPort
 $script:Hosts          = @($cfg.hosts)
 # Always keep the currently-configured host in the candidate list.
 if ($HOST_IP -and (@($script:Hosts) -notcontains $HOST_IP)) { $script:Hosts += $HOST_IP }
@@ -201,6 +206,7 @@ $script:menuMic.DropDownItems.Add($script:micBt)    | Out-Null
 
 $script:itemOverlay = New-Object System.Windows.Forms.ToolStripMenuItem 'Show dictation overlay'
 $script:itemMdns    = New-Object System.Windows.Forms.ToolStripMenuItem 'Auto-discover (mDNS)'
+$script:itemListen  = New-Object System.Windows.Forms.ToolStripMenuItem 'Listen mode (phone dials in)'
 
 # Transport submenu: one checkable entry per configured endpoint, plus Add/Edit/Remove actions so
 # IPs can be changed at runtime for different networks. Populated by Rebuild-TransportMenu at
@@ -214,6 +220,7 @@ $script:micPhone.Add_Click({ Set-MicPref 'builtin' })
 $script:micBt.Add_Click({ Set-MicPref 'bluetooth' })
 $script:itemOverlay.Add_Click({ Set-OverlayEnabled (-not $script:OverlayEnabled) })
 $script:itemMdns.Add_Click({ Set-MdnsEnabled (-not $script:MdnsEnabled) })
+$script:itemListen.Add_Click({ Set-ListenEnabled (-not $script:ListenEnabled) })
 $script:itemExit.Add_Click({ $script:ShouldExit = $true })
 
 $script:menu.Items.Add($script:itemStatus) | Out-Null
@@ -227,6 +234,7 @@ $script:menu.Items.Add($script:menuMic) | Out-Null
 $script:menu.Items.Add($script:menuTransport) | Out-Null
 $script:menu.Items.Add($script:itemOverlay) | Out-Null
 $script:menu.Items.Add($script:itemMdns) | Out-Null
+$script:menu.Items.Add($script:itemListen) | Out-Null
 $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $script:menu.Items.Add($script:itemExit) | Out-Null
 
@@ -276,6 +284,32 @@ function Set-MdnsEnabled([bool]$on) {
     Update-MdnsCheck
     Save-Config
     Write-Log "mDNS auto-discovery: $(if ($on) { 'enabled' } else { 'disabled' })" 'Cyan'
+}
+
+function Update-ListenCheck { $script:itemListen.Checked = $script:ListenEnabled }
+
+# Toggle reverse-connect "listen mode": the tray becomes a TCP server that the phone dials into,
+# instead of the tray dialing the phone. Use it where the network only permits the phone to connect
+# out (e.g. a full-tunnel corporate VPN with client isolation). Switching drops any current
+# connection and listener, then resets the backoff so the main loop re-establishes in the new mode.
+# (REQ-FUNC-018)
+function Set-ListenEnabled([bool]$on) {
+    $script:ListenEnabled = $on
+    Update-ListenCheck
+    Save-Config
+    Close-Transport
+    Stop-Listener
+    $script:BackoffMs = $script:BackoffMinMs
+    $script:NextConnectAt = 0
+    $script:AnnouncedConnecting = $false
+    Set-ListeningState $false
+    Hide-Overlay
+    if ($on) {
+        $script:itemServer.Text = "Server: listening on :$($script:ListenPort) (phone dials in)"
+    } else {
+        $script:itemServer.Text = 'Server: (auto)'
+    }
+    Write-Log "Listen mode: $(if ($on) { "ENABLED (the phone dials in on port $($script:ListenPort))" } else { 'disabled (the tray dials the phone)' })" 'Cyan'
 }
 
 # Tell the phone which microphone to use. Applies to the next dictation; remembered on the phone.
@@ -402,7 +436,9 @@ Update-ModeChecks
 Update-MicChecks
 Update-OverlayCheck
 Update-MdnsCheck
+Update-ListenCheck
 Rebuild-TransportMenu
+if ($script:ListenEnabled) { $script:itemServer.Text = "Server: listening on :$($script:ListenPort) (phone dials in)" }
 
 # --- Dictation overlay (HUD, REQ-FUNC-014) -------------------------------------
 # A dark, semi-transparent bar at the bottom-centre of the primary screen that visualises a live
@@ -744,6 +780,7 @@ function Start-OverlayPreview {
 # --- Transport -----------------------------------------------------------------
 $global:recvBuffer  = New-Object System.Text.StringBuilder
 $readByteBuffer     = New-Object 'byte[]' 4096
+$global:tcpListener = $null   # reverse-connect listen mode (REQ-FUNC-018)
 
 # Reconnect/backoff state (see Ensure-Connected). Mirrors windows/transport/tcp_client.py:
 # bounded connect timeout + capped exponential backoff, so an unreachable phone never freezes
@@ -899,11 +936,73 @@ function Get-ConnectCandidates {
     return $list
 }
 
+# --- Reverse-connect: listen mode (the phone dials in, REQ-FUNC-018) ----------
+function Stop-Listener {
+    if ($global:tcpListener) {
+        try { $global:tcpListener.Stop() } catch {}
+        $global:tcpListener = $null
+    }
+}
+
+# Server side of reverse-connect: bind a TcpListener and accept the phone when it dials in. On
+# accept it populates the same $global:tcpClient/$global:stream/$global:writer that Try-Connect sets,
+# so the entire downstream pipeline (main-loop drain, Process-HermesLine, Send-HermesCommand, the
+# overlay, Update-TrayIcon, the disconnect handler) is identical to the dial-out path. Non-blocking:
+# uses Pending() so the WinForms pump is never parked waiting for a connection.
+function Ensure-Listening {
+    if (-not $global:tcpListener) {
+        try {
+            $global:tcpListener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Any, [int]$script:ListenPort)
+            $global:tcpListener.Start()
+            if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Waiting for phone' }
+            $script:itemServer.Text = "Server: listening on :$($script:ListenPort) (phone dials in)"
+            if (-not $script:AnnouncedConnecting) {
+                Write-Log "Listen mode: waiting for the phone on port $($script:ListenPort)..." 'DarkYellow'
+                $script:AnnouncedConnecting = $true
+            }
+        } catch {
+            Write-Log "Listen mode: cannot bind port $($script:ListenPort): $($_.Exception.Message)" 'Red'
+            $global:tcpListener = $null
+            $script:NextConnectAt = [Environment]::TickCount + $script:BackoffMs
+            $script:BackoffMs = [Math]::Min($script:BackoffMs * 2, $script:BackoffMaxMs)
+            return $false
+        }
+    }
+    try {
+        if (-not $global:tcpListener.Pending()) { return $false }
+        $client = $global:tcpListener.AcceptTcpClient()
+        $client.NoDelay = $true
+        $global:tcpClient = $client
+        $global:stream    = $client.GetStream()
+        $global:writer = New-Object System.IO.StreamWriter($global:stream)
+        $global:writer.AutoFlush = $true
+        [void]$global:recvBuffer.Clear()
+        $peer = try { $client.Client.RemoteEndPoint.ToString() } catch { 'phone' }
+        $script:itemServer.Text = "Server: $peer (connected, listen mode)"
+        $script:BackoffMs = $script:BackoffMinMs
+        $script:AnnouncedConnecting = $false
+        Send-SetMic $script:MicPref   # sync the mic preference to the phone on (re)connect
+        Update-TrayIcon
+        if (-not $script:isListening) { $script:itemStatus.Text = 'Status: Ready' }
+        Write-Log "Listen mode: phone connected from $peer" 'Green'
+        return $true
+    } catch {
+        Write-Log "Listen mode accept error: $($_.Exception.Message)" 'DarkYellow'
+        return $false
+    }
+}
+
 function Ensure-Connected {
     # Called once per main-loop iteration. Non-blocking: returns immediately while backing off, and
     # makes at most one connect cycle per interval, so an unreachable phone never freezes the tray.
     # A cycle tries mDNS first, then each configured endpoint, connecting to the first that answers.
     if ($global:tcpClient -and $global:tcpClient.Connected) { return $true }
+    # Reverse-connect: the phone dials us -- poll the listener instead of dialing out. Gate only the
+    # (re)bind attempt on the backoff; once bound, Pending() is polled every iteration for a fast accept.
+    if ($script:ListenEnabled) {
+        if (-not $global:tcpListener -and [Environment]::TickCount -lt $script:NextConnectAt) { return $false }
+        return (Ensure-Listening)
+    }
     if ([Environment]::TickCount -lt $script:NextConnectAt) { return $false }
 
     if (-not $script:AnnouncedConnecting) {
@@ -1151,7 +1250,13 @@ while (-not $script:ShouldExit) {
         } catch {
             Write-Log "Disconnected: $($_.Exception.Message) Will reconnect." 'Red'
             Close-Transport
-            $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (disconnected)"
+            # In listen mode the TcpListener stays open (Close-Transport only drops the accepted
+            # socket), so the phone can simply dial back in.
+            if ($script:ListenEnabled) {
+                $script:itemServer.Text = "Server: listening on :$($script:ListenPort) (phone dials in)"
+            } else {
+                $script:itemServer.Text = "Server: ${HOST_IP}:${PORT} (disconnected)"
+            }
             [void]$global:recvBuffer.Clear()
             Set-ListeningState $false
             Hide-Overlay   # a dropped link mid-dictation yields no transcript; clear the HUD
@@ -1176,3 +1281,4 @@ try { if ($script:ovMeasureG)  { $script:ovMeasureG.Dispose() } } catch {}
 try { if ($global:writer) { $global:writer.Dispose() } } catch {}
 try { if ($global:stream) { $global:stream.Dispose() } } catch {}
 try { if ($global:tcpClient) { $global:tcpClient.Close() } } catch {}
+try { Stop-Listener } catch {}
